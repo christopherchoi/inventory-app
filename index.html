@@ -26,16 +26,8 @@ const { useState, useMemo, useEffect } = React;
 const CATEGORIES = ['전자제품', '의류', '식품', '가구', '스포츠', '도서', '기타'];
 
 const INITIAL_ITEMS = [
-  { id: 1, name: '무선 이어폰', category: '전자제품', quantity: 45, price: 89000, minStock: 10, supplier: '삼성전자' },
-  { id: 2, name: '면 티셔츠 (흰색)', category: '의류', quantity: 8, price: 25000, minStock: 15, supplier: '유니클로' },
-  { id: 3, name: '아메리카노 원두', category: '식품', quantity: 120, price: 18000, minStock: 20, supplier: '스타벅스' },
-  { id: 4, name: '인체공학 의자', category: '가구', quantity: 3, price: 450000, minStock: 5, supplier: '시디즈' },
-  { id: 5, name: '요가 매트', category: '스포츠', quantity: 30, price: 35000, minStock: 10, supplier: '나이키' },
-  { id: 6, name: '리액트 완벽 가이드', category: '도서', quantity: 12, price: 42000, minStock: 5, supplier: '한빛미디어' },
-  { id: 7, name: '블루투스 키보드', category: '전자제품', quantity: 22, price: 75000, minStock: 8, supplier: 'LG전자' },
-  { id: 8, name: '후리스 자켓', category: '의류', quantity: 5, price: 68000, minStock: 10, supplier: '파타고니아' },
-  { id: 9, name: '그래놀라 바', category: '식품', quantity: 200, price: 3500, minStock: 50, supplier: '오리온' },
-  { id: 10, name: '스탠딩 책상', category: '가구', quantity: 7, price: 320000, minStock: 3, supplier: '이케아' },
+  { id: 1, name: 'MANUKA HONEY STICK 10 MGO 100+', category: '식품', quantity: 2700, price: 0, minStock: 100, supplier: 'Bada International' },
+  { id: 2, name: 'MANUKA HONEY STICK 10 MGO 300+', category: '식품', quantity: 2700, price: 0, minStock: 100, supplier: 'Bada International' },
 ];
 
 function StatCard({ label, value, sub, color, icon }) {
