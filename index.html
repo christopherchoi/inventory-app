@@ -125,7 +125,12 @@ function Modal({ item, onClose, onSave }) {
 }
 
 function App() {
-  const [items, setItems] = useState(INITIAL_ITEMS);
+  const [items, setItems] = useState(() => {
+    try {
+      const saved = localStorage.getItem('stockflow-items');
+      return saved ? JSON.parse(saved) : INITIAL_ITEMS;
+    } catch { return INITIAL_ITEMS; }
+  });
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('전체');
   const [filterStatus, setFilterStatus] = useState('전체');
@@ -133,7 +138,17 @@ function App() {
   const [sortBy, setSortBy] = useState({ key: 'name', dir: 'asc' });
   const [selected, setSelected] = useState([]);
   const [toast, setToast] = useState(null);
-  const [nextId, setNextId] = useState(11);
+  const [nextId, setNextId] = useState(() => {
+    try {
+      const saved = localStorage.getItem('stockflow-items');
+      const parsed = saved ? JSON.parse(saved) : INITIAL_ITEMS;
+      return Math.max(...parsed.map(i => i.id)) + 1;
+    } catch { return 3; }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('stockflow-items', JSON.stringify(items));
+  }, [items]);
 
   function showToast(msg, type = 'success') {
     setToast({ msg, type });
