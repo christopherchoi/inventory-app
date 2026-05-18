@@ -13,9 +13,9 @@
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     body { font-family: 'Inter', sans-serif; }
     .fade-in { animation: fadeIn 0.3s ease-in-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
     .slide-in { animation: slideIn 0.25s ease-out; }
-    @keyframes slideIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+    @keyframes slideIn { from { opacity:0; transform:scale(0.97); } to { opacity:1; transform:scale(1); } }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -23,34 +23,229 @@
 <script type="text/babel">
 const { useState, useMemo, useEffect, useRef } = React;
 
-const INITIAL_LOCATIONS = [
-  { id: 1, name: 'Main Warehouse', type: 'warehouse' },
-  { id: 2, name: 'Honey Barn North Van', type: 'store' },
+/* ── Initial Data ── */
+const INIT_LOCS = [
+  { id:1, name:'Main Warehouse', type:'warehouse' },
+  { id:2, name:'Honey Barn North Van', type:'store' },
 ];
-const INITIAL_ITEMS = [
-  { id: 1, name: 'MANUKA HONEY STICK 10 MGO 100+', sku: 'MGO-100', category: '식품', supplier: 'Bada International', costPrice: 0, sellPrice: 0 },
-  { id: 2, name: 'MANUKA HONEY STICK 10 MGO 300+', sku: 'MGO-300', category: '식품', supplier: 'Bada International', costPrice: 0, sellPrice: 0 },
+const INIT_ITEMS = [
+  { id:1, name:'MANUKA HONEY STICK 10 MGO 100+', sku:'MGO-100', supplier:'Bada International', costPrice:0, sellPrice:0, minStock:100 },
+  { id:2, name:'MANUKA HONEY STICK 10 MGO 300+', sku:'MGO-300', supplier:'Bada International', costPrice:0, sellPrice:0, minStock:100 },
 ];
-const INITIAL_STOCK = { 1: { 1: 2700, 2: 0 }, 2: { 1: 2700, 2: 0 } };
+const INIT_STOCK = { 1:{1:2700,2:0}, 2:{1:2700,2:0} };
 
-const MOV_TYPES = ['입고', '이동', '판매', '출고'];
-const MOV_DESC  = { '입고': '외부 → 창고/스토어', '이동': '창고 ↔ 스토어 간 이동', '판매': '스토어에서 판매됨', '출고': '외부로 나감' };
-const MOV_COLOR = { '입고': 'bg-green-100 text-green-700', '이동': 'bg-blue-100 text-blue-700', '판매': 'bg-purple-100 text-purple-700', '출고': 'bg-red-100 text-red-700' };
-const MOV_ICON  = { '입고': '📥', '이동': '🔄', '판매': '🛒', '출고': '📤' };
+const MOV_TYPES = ['입고','이동','판매','출고'];
+const MOV_DESC  = { '입고':'외부→창고/스토어', '이동':'창고↔스토어 이동', '판매':'스토어에서 판매', '출고':'외부로 나감' };
+const MOV_COLOR = { '입고':'bg-green-100 text-green-700','이동':'bg-blue-100 text-blue-700','판매':'bg-purple-100 text-purple-700','출고':'bg-red-100 text-red-700','취소':'bg-gray-100 text-gray-500' };
+const MOV_ICON  = { '입고':'📥','이동':'🔄','판매':'🛒','출고':'📤','취소':'↩️' };
+const ORD_STATUS_COLOR = { '주문중':'bg-amber-100 text-amber-700','입고완료':'bg-green-100 text-green-700','취소':'bg-gray-100 text-gray-500' };
 
-const fmt  = n => `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fmtN = n => Number(n || 0).toLocaleString();
+const fmt  = n => `$${Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+const fmtN = n => Number(n||0).toLocaleString();
+const toISO = d => d ? new Date(d).toISOString() : new Date().toISOString();
+const dateInput = iso => iso ? iso.slice(0,16) : new Date().toISOString().slice(0,16);
 
-function load(key, fallback) {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+function load(key, fb) { try { const v=localStorage.getItem(key); return v?JSON.parse(v):fb; } catch { return fb; } }
+
+/* ── Auth helpers ── */
+async function hashPw(pw) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function getSession() {
+  try {
+    const s = sessionStorage.getItem('sf-sess') || localStorage.getItem('sf-sess-rm');
+    return s ? JSON.parse(s) : null;
+  } catch { return null; }
+}
+function setSession(userId, remember) {
+  const s = JSON.stringify({ userId, ts: Date.now() });
+  sessionStorage.setItem('sf-sess', s);
+  if (remember) localStorage.setItem('sf-sess-rm', s);
+}
+function clearSession() {
+  sessionStorage.removeItem('sf-sess');
+  localStorage.removeItem('sf-sess-rm');
 }
 
-/* ── Shared Modal Shell ── */
-function Modal({ title, onClose, children }) {
+/* ── Setup Screen ── */
+function SetupScreen({ onDone }) {
+  const [form, setForm] = useState({ name:'', username:'', password:'', confirm:'' });
+  const [err, setErr] = useState('');
+  const F = (k,v) => setForm(p=>({...p,[k]:v}));
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (form.password.length < 6) { setErr('비밀번호는 6자 이상이어야 합니다.'); return; }
+    if (form.password !== form.confirm) { setErr('비밀번호가 일치하지 않습니다.'); return; }
+    const hash = await hashPw(form.password);
+    const user = { id: Date.now(), name: form.name, username: form.username.toLowerCase(), passwordHash: hash, role: 'admin', createdAt: new Date().toISOString() };
+    localStorage.setItem('sf-users', JSON.stringify([user]));
+    setSession(user.id, true);
+    onDone(user);
+  }
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-white flex items-center justify-center p-4">
+      <div className="w-full max-w-md slide-in">
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4 shadow-lg">📦</div>
+          <h1 className="text-2xl font-bold text-gray-900">StockFlow 시작하기</h1>
+          <p className="text-gray-500 mt-1 text-sm">관리자 계정을 만들어주세요</p>
+        </div>
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-8">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">이름</label>
+              <input value={form.name} onChange={e=>F('name',e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="홍길동" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">아이디</label>
+              <input value={form.username} onChange={e=>F('username',e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="admin" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">비밀번호</label>
+              <input type="password" value={form.password} onChange={e=>F('password',e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="6자 이상" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">비밀번호 확인</label>
+              <input type="password" value={form.confirm} onChange={e=>F('confirm',e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="비밀번호 재입력" />
+            </div>
+            {err && <p className="text-sm text-red-500 bg-red-50 rounded-xl px-4 py-2.5">{err}</p>}
+            <button type="submit" className="w-full bg-indigo-600 text-white rounded-xl py-3 text-sm font-semibold hover:bg-indigo-700 transition-colors mt-2">관리자 계정 만들기</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Login Screen ── */
+function LoginScreen({ onLogin }) {
+  const [form, setForm] = useState({ username:'', password:'', remember:false });
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+  const F = (k,v) => setForm(p=>({...p,[k]:v}));
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true); setErr('');
+    const users = load('sf-users', []);
+    const user = users.find(u => u.username === form.username.toLowerCase());
+    if (!user) { setErr('아이디 또는 비밀번호가 올바르지 않습니다.'); setLoading(false); return; }
+    const hash = await hashPw(form.password);
+    if (hash !== user.passwordHash) { setErr('아이디 또는 비밀번호가 올바르지 않습니다.'); setLoading(false); return; }
+    setSession(user.id, form.remember);
+    onLogin(user);
+  }
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-white flex items-center justify-center p-4">
+      <div className="w-full max-w-md slide-in">
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4 shadow-lg">📦</div>
+          <h1 className="text-2xl font-bold text-gray-900">StockFlow</h1>
+          <p className="text-gray-500 mt-1 text-sm">재고·수익·거래처 통합 관리</p>
+        </div>
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-8">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">아이디</label>
+              <input value={form.username} onChange={e=>F('username',e.target.value)} required autoFocus className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="아이디 입력" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">비밀번호</label>
+              <input type="password" value={form.password} onChange={e=>F('password',e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="비밀번호 입력" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={form.remember} onChange={e=>F('remember',e.target.checked)} className="w-4 h-4 rounded accent-indigo-600" />
+              <span className="text-sm text-gray-600">로그인 상태 유지</span>
+            </label>
+            {err && <p className="text-sm text-red-500 bg-red-50 rounded-xl px-4 py-2.5">{err}</p>}
+            <button type="submit" disabled={loading} className="w-full bg-indigo-600 text-white rounded-xl py-3 text-sm font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-60">
+              {loading ? '확인 중...' : '로그인'}
+            </button>
+          </form>
+        </div>
+        <p className="text-center text-xs text-gray-400 mt-4">문제가 있으면 관리자에게 문의하세요.</p>
+      </div>
+    </div>
+  );
+}
+
+/* ── User Management Modal ── */
+function UserModal({ editUser, onClose, onSave }) {
+  const [form, setForm] = useState(editUser ? { name: editUser.name, username: editUser.username, role: editUser.role, password: '', confirm: '' } : { name:'', username:'', role:'staff', password:'', confirm:'' });
+  const [err, setErr] = useState('');
+  const F = (k,v) => setForm(p=>({...p,[k]:v}));
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!editUser && form.password.length < 6) { setErr('비밀번호는 6자 이상이어야 합니다.'); return; }
+    if (!editUser && form.password !== form.confirm) { setErr('비밀번호가 일치하지 않습니다.'); return; }
+    if (editUser && form.password && form.password !== form.confirm) { setErr('비밀번호가 일치하지 않습니다.'); return; }
+    let passwordHash = editUser?.passwordHash;
+    if (form.password) passwordHash = await hashPw(form.password);
+    onSave({ ...editUser, name: form.name, username: form.username.toLowerCase(), role: form.role, passwordHash });
+  }
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md slide-in max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-6 border-b border-gray-100 sticky top-0 bg-white rounded-t-2xl">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md slide-in">
+        <div className="flex items-center justify-between p-6 border-b border-gray-100">
+          <h2 className="text-lg font-bold text-gray-800">{editUser ? '계정 수정' : '계정 추가'}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100">✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">이름</label>
+              <input value={form.name} onChange={e=>F('name',e.target.value)} required className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="홍길동" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">아이디</label>
+              <input value={form.username} onChange={e=>F('username',e.target.value)} required disabled={!!editUser} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50" placeholder="username" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">역할</label>
+            <div className="flex gap-3">
+              {[['admin','👑 Admin','전체 접근 + 사용자 관리'],['staff','👤 Staff','재고/입출고만']].map(([val,label,desc])=>(
+                <button key={val} type="button" onClick={()=>F('role',val)}
+                  className={`flex-1 py-2.5 px-3 rounded-xl text-sm border-2 transition-colors text-left ${form.role===val?'border-indigo-500 bg-indigo-50':'border-gray-200 hover:border-gray-300'}`}>
+                  <div className="font-semibold text-gray-800">{label}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">{desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{editUser ? '새 비밀번호 (변경시만)' : '비밀번호 *'}</label>
+            <input type="password" value={form.password} onChange={e=>F('password',e.target.value)} required={!editUser} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="6자 이상" />
+          </div>
+          {form.password && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">비밀번호 확인</label>
+              <input type="password" value={form.confirm} onChange={e=>F('confirm',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="비밀번호 재입력" />
+            </div>
+          )}
+          {err && <p className="text-sm text-red-500 bg-red-50 rounded-xl px-4 py-2.5">{err}</p>}
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">취소</button>
+            <button type="submit" className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-indigo-700">{editUser ? '수정 완료' : '계정 추가'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function exportCSV(filename, headers, rows) {
+  const lines = [headers.join(','), ...rows.map(r => r.map(c => `"${String(c??'').replace(/"/g,'""')}"`).join(','))];
+  const blob = new Blob(['﻿'+lines.join('\n')], {type:'text/csv;charset=utf-8;'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
+
+/* ── Modal Shell ── */
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className={`bg-white rounded-2xl shadow-2xl w-full ${wide?'max-w-2xl':'max-w-md'} slide-in max-h-[90vh] overflow-y-auto`}>
+        <div className="flex items-center justify-between p-6 border-b border-gray-100 sticky top-0 bg-white rounded-t-2xl z-10">
           <h2 className="text-lg font-bold text-gray-800">{title}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100">✕</button>
         </div>
@@ -61,52 +256,72 @@ function Modal({ title, onClose, children }) {
 }
 
 /* ── Item Modal ── */
-function ItemModal({ item, onClose, onSave }) {
-  const [form, setForm] = useState(item || { name: '', sku: '', supplier: '', costPrice: '', sellPrice: '' });
-  const F = (k, v) => setForm(p => ({...p, [k]: v}));
+function ItemModal({ item, suppliers, images, onClose, onSave, onImage }) {
+  const [form, setForm] = useState(item || { name:'', sku:'', supplier:'', costPrice:'', sellPrice:'', minStock:'' });
+  const F = (k,v) => setForm(p=>({...p,[k]:v}));
+  const imgRef = useRef();
+  const img = images[item?.id];
+
+  function handleImg(e) {
+    const file = e.target.files[0]; if (!file) return;
+    if (file.size > 1024*1024) { alert('이미지는 1MB 이하로 올려주세요.'); return; }
+    const reader = new FileReader();
+    reader.onload = ev => onImage(item?.id || '_new', ev.target.result);
+    reader.readAsDataURL(file);
+  }
+
   return (
-    <Modal title={item ? '상품 수정' : '신규 상품 추가'} onClose={onClose}>
-      <form onSubmit={e => { e.preventDefault(); if (form.name.trim()) onSave({ ...form, costPrice: Number(form.costPrice) || 0, sellPrice: Number(form.sellPrice) || 0 }); }} className="p-6 space-y-4">
+    <Modal title={item?'상품 수정':'신규 상품 추가'} onClose={onClose}>
+      <form onSubmit={e=>{e.preventDefault();if(form.name.trim())onSave({...form,costPrice:Number(form.costPrice)||0,sellPrice:Number(form.sellPrice)||0,minStock:Number(form.minStock)||0});}} className="p-6 space-y-4">
+        {/* Image */}
+        <div className="flex items-center gap-4">
+          <div className="w-16 h-16 rounded-xl border-2 border-dashed border-gray-200 flex items-center justify-center cursor-pointer overflow-hidden hover:border-indigo-400 transition-colors flex-shrink-0" onClick={()=>imgRef.current?.click()}>
+            {img ? <img src={img} className="w-full h-full object-cover" /> : <span className="text-2xl">📷</span>}
+          </div>
+          <div>
+            <p className="text-sm font-medium text-gray-700">상품 이미지</p>
+            <p className="text-xs text-gray-400">클릭하여 업로드 (1MB 이하)</p>
+          </div>
+          <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={handleImg} />
+        </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">상품명 *</label>
-          <input value={form.name} onChange={e => F('name', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="상품명 입력" required />
+          <input value={form.name} onChange={e=>F('name',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="상품명 입력" required />
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">SKU</label>
-            <input value={form.sku} onChange={e => F('sku', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: MGO-100" />
+            <input value={form.sku} onChange={e=>F('sku',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: MGO-100" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">공급업체</label>
-            <input value={form.supplier} onChange={e => F('supplier', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="공급업체명" />
+            <input value={form.supplier} onChange={e=>F('supplier',e.target.value)} list="supplier-list" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="공급업체명" />
+            <datalist id="supplier-list">{suppliers.map(s=><option key={s.id} value={s.name}/>)}</datalist>
           </div>
         </div>
         <div className="bg-indigo-50 rounded-xl p-4 space-y-3">
-          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">가격 설정</p>
-          <div className="grid grid-cols-2 gap-4">
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">가격 · 재고 설정</p>
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">입고가 (원가) $</label>
-              <input type="number" min="0" step="0.01" value={form.costPrice} onChange={e => F('costPrice', e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0.00" />
+              <label className="block text-xs font-medium text-gray-600 mb-1">입고가 $</label>
+              <input type="number" min="0" step="0.01" value={form.costPrice} onChange={e=>F('costPrice',e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0.00" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">판매가 $</label>
-              <input type="number" min="0" step="0.01" value={form.sellPrice} onChange={e => F('sellPrice', e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0.00" />
+              <label className="block text-xs font-medium text-gray-600 mb-1">판매가 $</label>
+              <input type="number" min="0" step="0.01" value={form.sellPrice} onChange={e=>F('sellPrice',e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0.00" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">최소 재고</label>
+              <input type="number" min="0" value={form.minStock} onChange={e=>F('minStock',e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0" />
             </div>
           </div>
-          {(Number(form.costPrice) > 0 && Number(form.sellPrice) > 0) && (
-            <p className="text-xs text-indigo-600">
-              마진: {fmt(Number(form.sellPrice) - Number(form.costPrice))} ({Math.round(((Number(form.sellPrice) - Number(form.costPrice)) / Number(form.sellPrice)) * 100)}%)
-            </p>
+          {(Number(form.costPrice)>0&&Number(form.sellPrice)>0)&&(
+            <p className="text-xs text-indigo-600">마진: {fmt(Number(form.sellPrice)-Number(form.costPrice))} ({Math.round(((Number(form.sellPrice)-Number(form.costPrice))/Number(form.sellPrice))*100)}%)</p>
           )}
         </div>
         <div className="flex gap-3 pt-2">
           <button type="button" onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">취소</button>
-          <button type="submit" className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-indigo-700">{item ? '수정 완료' : '추가하기'}</button>
+          <button type="submit" className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-indigo-700">{item?'수정 완료':'추가하기'}</button>
         </div>
       </form>
     </Modal>
@@ -115,23 +330,20 @@ function ItemModal({ item, onClose, onSave }) {
 
 /* ── Location Modal ── */
 function LocationModal({ onClose, onSave }) {
-  const [form, setForm] = useState({ name: '', type: 'store' });
+  const [form, setForm] = useState({ name:'', type:'store' });
   return (
     <Modal title="위치 추가" onClose={onClose}>
-      <form onSubmit={e => { e.preventDefault(); if (form.name.trim()) onSave(form); }} className="p-6 space-y-4">
+      <form onSubmit={e=>{e.preventDefault();if(form.name.trim())onSave(form);}} className="p-6 space-y-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">위치명 *</label>
-          <input value={form.name} onChange={e => setForm({...form, name: e.target.value})}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: Honey Barn North Van" required />
+          <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: Honey Barn North Van" required />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">유형</label>
           <div className="flex gap-3">
-            {[['warehouse','🏭 창고'],['store','🏪 스토어']].map(([val, label]) => (
-              <button key={val} type="button" onClick={() => setForm({...form, type: val})}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 transition-colors ${form.type === val ? 'border-indigo-500 bg-indigo-50 text-indigo-600' : 'border-gray-200 text-gray-400'}`}>
-                {label}
-              </button>
+            {[['warehouse','🏭 창고'],['store','🏪 스토어']].map(([val,label])=>(
+              <button key={val} type="button" onClick={()=>setForm({...form,type:val})}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 transition-colors ${form.type===val?'border-indigo-500 bg-indigo-50 text-indigo-600':'border-gray-200 text-gray-400'}`}>{label}</button>
             ))}
           </div>
         </div>
@@ -144,40 +356,133 @@ function LocationModal({ onClose, onSave }) {
   );
 }
 
+/* ── Supplier Modal ── */
+function SupplierModal({ supplier, onClose, onSave }) {
+  const [form, setForm] = useState(supplier||{name:'',contact:'',email:'',phone:'',address:'',notes:''});
+  const F=(k,v)=>setForm(p=>({...p,[k]:v}));
+  return (
+    <Modal title={supplier?'거래처 수정':'거래처 추가'} onClose={onClose}>
+      <form onSubmit={e=>{e.preventDefault();if(form.name.trim())onSave(form);}} className="p-6 space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">거래처명 *</label>
+          <input value={form.name} onChange={e=>F('name',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: Bada International" required />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">담당자</label>
+            <input value={form.contact} onChange={e=>F('contact',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="담당자명" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">전화번호</label>
+            <input value={form.phone} onChange={e=>F('phone',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="010-0000-0000" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">이메일</label>
+          <input type="email" value={form.email} onChange={e=>F('email',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="example@email.com" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">주소</label>
+          <input value={form.address} onChange={e=>F('address',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="주소 입력" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">메모</label>
+          <textarea value={form.notes} onChange={e=>F('notes',e.target.value)} rows={2} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" placeholder="추가 정보" />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button type="button" onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">취소</button>
+          <button type="submit" className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-indigo-700">{supplier?'수정 완료':'추가하기'}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/* ── Purchase Order Modal ── */
+function OrderModal({ order, items, suppliers, locations, onClose, onSave }) {
+  const [form, setForm] = useState(order||{supplierId:'',itemId:items[0]?.id||'',quantity:'',unitCost:'',orderDate:dateInput(),expectedDate:'',toLocationId:locations[0]?.id||'',memo:'',status:'주문중'});
+  const F=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const selItem = items.find(i=>i.id===Number(form.itemId));
+  return (
+    <Modal title={order?'발주 수정':'신규 발주 등록'} onClose={onClose}>
+      <form onSubmit={e=>{e.preventDefault();onSave({...form,supplierId:Number(form.supplierId)||null,itemId:Number(form.itemId),quantity:Number(form.quantity),unitCost:Number(form.unitCost)||0,toLocationId:Number(form.toLocationId)||null});}} className="p-6 space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">거래처</label>
+          <select value={form.supplierId} onChange={e=>F('supplierId',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">거래처 선택</option>
+            {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">상품 *</label>
+          <select value={form.itemId} onChange={e=>F('itemId',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {items.map(i=><option key={i.id} value={i.id}>{i.sku?`[${i.sku}] `:''}{i.name}</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">수량 *</label>
+            <input type="number" min="1" value={form.quantity} onChange={e=>F('quantity',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="수량" required />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">단가 $</label>
+            <input type="number" min="0" step="0.01" value={form.unitCost} onChange={e=>F('unitCost',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="0.00" />
+          </div>
+        </div>
+        {form.quantity&&form.unitCost&&(
+          <p className="text-sm text-indigo-600 font-medium">총 발주 금액: {fmt(Number(form.quantity)*Number(form.unitCost))}</p>
+        )}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">입고 위치</label>
+          <select value={form.toLocationId} onChange={e=>F('toLocationId',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">위치 선택</option>
+            {locations.map(l=><option key={l.id} value={l.id}>{l.type==='warehouse'?'🏭':'🏪'} {l.name}</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">발주일</label>
+            <input type="datetime-local" value={form.orderDate} onChange={e=>F('orderDate',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">예상 입고일</label>
+            <input type="datetime-local" value={form.expectedDate} onChange={e=>F('expectedDate',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">메모</label>
+          <input value={form.memo} onChange={e=>F('memo',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="추가 메모" />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button type="button" onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">취소</button>
+          <button type="submit" className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-indigo-700">{order?'수정 완료':'발주 등록'}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 /* ── Movement Modal ── */
-function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, onClose, onSubmit }) {
-  const [form, setForm] = useState({ itemId: defaultItemId || items[0]?.id || '', type: '판매', fromLocationId: defaultLocId || '', toLocationId: '', quantity: '', sellPrice: '', memo: '' });
-  const [error, setError] = useState('');
-  const F = (k, v) => { setForm(p => ({...p, [k]: v})); setError(''); };
+function MovementModal({ items, locations, stock, suppliers, defaultItemId, defaultLocId, onClose, onSubmit }) {
+  const [form, setForm] = useState({itemId:defaultItemId||items[0]?.id||'',type:'판매',fromLocationId:defaultLocId||'',toLocationId:'',quantity:'',sellPrice:'',memo:'',date:dateInput()});
+  const [error,setError]=useState('');
+  const F=(k,v)=>{setForm(p=>({...p,[k]:v}));setError('');};
+  const needsFrom=['이동','판매','출고'].includes(form.type);
+  const needsTo=['입고','이동'].includes(form.type);
+  const isSale=form.type==='판매';
+  const selItem=items.find(i=>i.id===Number(form.itemId));
+  const curStock=form.itemId&&form.fromLocationId?(stock[form.itemId]?.[form.fromLocationId]||0):null;
 
-  const needsFrom = ['이동','판매','출고'].includes(form.type);
-  const needsTo   = ['입고','이동'].includes(form.type);
-  const isSale    = form.type === '판매';
-  const selectedItem = items.find(i => i.id === Number(form.itemId));
-  const currentStock = form.itemId && form.fromLocationId ? (stock[form.itemId]?.[form.fromLocationId] || 0) : null;
-
-  useEffect(() => {
-    if (selectedItem && isSale && !form.sellPrice) {
-      setForm(p => ({...p, sellPrice: selectedItem.sellPrice || ''}));
-    }
-  }, [form.itemId, form.type]);
+  useEffect(()=>{ if(selItem&&isSale&&!form.sellPrice) setForm(p=>({...p,sellPrice:selItem.sellPrice||''})); },[form.itemId,form.type]);
 
   function handleSubmit(e) {
     e.preventDefault();
-    const qty = Number(form.quantity);
-    if (!qty || qty <= 0) { setError('수량을 올바르게 입력하세요.'); return; }
-    if (needsFrom && !form.fromLocationId) { setError('출발 위치를 선택하세요.'); return; }
-    if (needsTo   && !form.toLocationId)   { setError('도착 위치를 선택하세요.'); return; }
-    if (needsFrom && currentStock !== null && qty > currentStock) { setError(`재고 부족. 현재 재고: ${currentStock}개`); return; }
-    onSubmit({
-      ...form,
-      itemId:         Number(form.itemId),
-      fromLocationId: form.fromLocationId ? Number(form.fromLocationId) : null,
-      toLocationId:   form.toLocationId   ? Number(form.toLocationId)   : null,
-      quantity:       qty,
-      sellPrice:      isSale ? (Number(form.sellPrice) || 0) : null,
-      costPrice:      isSale ? (selectedItem?.costPrice || 0) : null,
-    });
+    const qty=Number(form.quantity);
+    if(!qty||qty<=0){setError('수량을 올바르게 입력하세요.');return;}
+    if(needsFrom&&!form.fromLocationId){setError('출발 위치를 선택하세요.');return;}
+    if(needsTo&&!form.toLocationId){setError('도착 위치를 선택하세요.');return;}
+    if(needsFrom&&curStock!==null&&qty>curStock){setError(`재고 부족. 현재 재고: ${curStock}개`);return;}
+    onSubmit({...form,itemId:Number(form.itemId),fromLocationId:form.fromLocationId?Number(form.fromLocationId):null,toLocationId:form.toLocationId?Number(form.toLocationId):null,quantity:qty,sellPrice:isSale?(Number(form.sellPrice)||0):null,costPrice:isSale?(selItem?.costPrice||0):null,date:toISO(form.date)});
   }
 
   return (
@@ -186,9 +491,9 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">유형</label>
           <div className="grid grid-cols-4 gap-2">
-            {MOV_TYPES.map(t => (
-              <button key={t} type="button" onClick={() => setForm(p => ({...p, type: t, fromLocationId: defaultLocId || '', toLocationId: ''}))}
-                className={`py-2 rounded-xl text-xs font-semibold border-2 transition-colors ${form.type === t ? 'border-indigo-500 bg-indigo-50 text-indigo-600' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}>
+            {MOV_TYPES.map(t=>(
+              <button key={t} type="button" onClick={()=>setForm(p=>({...p,type:t,fromLocationId:defaultLocId||'',toLocationId:''}))}
+                className={`py-2 rounded-xl text-xs font-semibold border-2 transition-colors ${form.type===t?'border-indigo-500 bg-indigo-50 text-indigo-600':'border-gray-200 text-gray-400 hover:border-gray-300'}`}>
                 {MOV_ICON[t]} {t}
               </button>
             ))}
@@ -197,74 +502,57 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">상품 (SKU)</label>
-          <select value={form.itemId} onChange={e => F('itemId', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            {items.map(i => <option key={i.id} value={i.id}>{i.sku ? `[${i.sku}] ` : ''}{i.name}</option>)}
+          <select value={form.itemId} onChange={e=>F('itemId',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {items.map(i=><option key={i.id} value={i.id}>{i.sku?`[${i.sku}] `:''}{i.name}</option>)}
           </select>
         </div>
-        {needsFrom && (
+        {needsFrom&&(
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{form.type === '이동' ? '출발 위치' : '위치'}</label>
-            <select value={form.fromLocationId} onChange={e => F('fromLocationId', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <label className="block text-sm font-medium text-gray-700 mb-1">{form.type==='이동'?'출발 위치':'위치'}</label>
+            <select value={form.fromLocationId} onChange={e=>F('fromLocationId',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="">위치 선택</option>
-              {locations.map(l => <option key={l.id} value={l.id}>{l.type === 'warehouse' ? '🏭' : '🏪'} {l.name}</option>)}
+              {locations.map(l=><option key={l.id} value={l.id}>{l.type==='warehouse'?'🏭':'🏪'} {l.name}</option>)}
             </select>
-            {currentStock !== null && <p className="text-xs text-gray-400 mt-1">현재 재고: <span className="font-semibold text-gray-600">{currentStock.toLocaleString()}개</span></p>}
+            {curStock!==null&&<p className="text-xs text-gray-400 mt-1">현재 재고: <span className="font-semibold text-gray-600">{curStock.toLocaleString()}개</span></p>}
           </div>
         )}
-        {needsTo && (
+        {needsTo&&(
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{form.type === '이동' ? '도착 위치' : '입고 위치'}</label>
-            <select value={form.toLocationId} onChange={e => F('toLocationId', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <label className="block text-sm font-medium text-gray-700 mb-1">{form.type==='이동'?'도착 위치':'입고 위치'}</label>
+            <select value={form.toLocationId} onChange={e=>F('toLocationId',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="">위치 선택</option>
-              {locations.filter(l => l.id !== Number(form.fromLocationId)).map(l => (
-                <option key={l.id} value={l.id}>{l.type === 'warehouse' ? '🏭' : '🏪'} {l.name}</option>
-              ))}
+              {locations.filter(l=>l.id!==Number(form.fromLocationId)).map(l=><option key={l.id} value={l.id}>{l.type==='warehouse'?'🏭':'🏪'} {l.name}</option>)}
             </select>
           </div>
         )}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">수량</label>
-            <input type="number" min="1" value={form.quantity} onChange={e => F('quantity', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="수량 입력" required />
+            <input type="number" min="1" value={form.quantity} onChange={e=>F('quantity',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="수량" required />
           </div>
-          {isSale && (
+          {isSale&&(
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">판매가 $ <span className="text-gray-400 font-normal">(개당)</span></label>
-              <input type="number" min="0" step="0.01" value={form.sellPrice} onChange={e => F('sellPrice', e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="0.00" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">판매가 $ (개당)</label>
+              <input type="number" min="0" step="0.01" value={form.sellPrice} onChange={e=>F('sellPrice',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="0.00" />
             </div>
           )}
         </div>
-        {isSale && form.quantity && form.sellPrice && (
-          <div className="bg-green-50 rounded-xl px-4 py-3 text-sm">
-            <div className="flex justify-between text-gray-600">
-              <span>매출</span>
-              <span className="font-semibold">{fmt(Number(form.quantity) * Number(form.sellPrice))}</span>
-            </div>
-            {selectedItem?.costPrice > 0 && (
-              <>
-                <div className="flex justify-between text-gray-600 mt-1">
-                  <span>원가</span>
-                  <span className="font-semibold text-red-500">-{fmt(Number(form.quantity) * selectedItem.costPrice)}</span>
-                </div>
-                <div className="flex justify-between font-bold text-green-700 mt-1 pt-1 border-t border-green-200">
-                  <span>순수익</span>
-                  <span>{fmt(Number(form.quantity) * (Number(form.sellPrice) - selectedItem.costPrice))}</span>
-                </div>
-              </>
-            )}
+        {isSale&&form.quantity&&form.sellPrice&&(
+          <div className="bg-green-50 rounded-xl px-4 py-3 text-sm space-y-1">
+            <div className="flex justify-between text-gray-600"><span>매출</span><span className="font-semibold">{fmt(Number(form.quantity)*Number(form.sellPrice))}</span></div>
+            {selItem?.costPrice>0&&<><div className="flex justify-between text-gray-600"><span>원가</span><span className="font-semibold text-red-500">-{fmt(Number(form.quantity)*selItem.costPrice)}</span></div>
+            <div className="flex justify-between font-bold text-green-700 pt-1 border-t border-green-200"><span>순수익</span><span>{fmt(Number(form.quantity)*(Number(form.sellPrice)-selItem.costPrice))}</span></div></>}
           </div>
         )}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">메모 (선택)</label>
-          <input value={form.memo} onChange={e => F('memo', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="추가 메모" />
+          <label className="block text-sm font-medium text-gray-700 mb-1">날짜 (과거 입력 가능)</label>
+          <input type="datetime-local" value={form.date} onChange={e=>F('date',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
         </div>
-        {error && <p className="text-sm text-red-500 bg-red-50 rounded-xl px-4 py-2.5">{error}</p>}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">메모 (선택)</label>
+          <input value={form.memo} onChange={e=>F('memo',e.target.value)} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="추가 메모" />
+        </div>
+        {error&&<p className="text-sm text-red-500 bg-red-50 rounded-xl px-4 py-2.5">{error}</p>}
         <div className="flex gap-3 pt-2">
           <button type="button" onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">취소</button>
           <button type="submit" className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-indigo-700">기록하기</button>
@@ -274,179 +562,264 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
   );
 }
 
-/* ── Bar Chart ── */
+/* ── Chart ── */
 function MonthlyChart({ data }) {
-  const ref = useRef(null);
-  const chartRef = useRef(null);
-  useEffect(() => {
-    if (!ref.current || !data.length) return;
-    if (chartRef.current) chartRef.current.destroy();
-    chartRef.current = new Chart(ref.current, {
-      type: 'bar',
-      data: {
-        labels: data.map(d => d.month),
-        datasets: [
-          { label: '매출', data: data.map(d => d.revenue), backgroundColor: 'rgba(99,102,241,0.8)', borderRadius: 6 },
-          { label: '원가', data: data.map(d => d.cost), backgroundColor: 'rgba(239,68,68,0.6)', borderRadius: 6 },
-          { label: '순수익', data: data.map(d => d.profit), backgroundColor: 'rgba(34,197,94,0.8)', borderRadius: 6 },
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { position: 'top', labels: { font: { size: 12, family: 'Inter' }, padding: 16 } } },
-        scales: {
-          y: { ticks: { callback: v => `$${v.toLocaleString()}`, font: { size: 11 } }, grid: { color: 'rgba(0,0,0,0.05)' } },
-          x: { ticks: { font: { size: 11 } }, grid: { display: false } }
-        }
-      }
-    });
-    return () => { if (chartRef.current) chartRef.current.destroy(); };
-  }, [data]);
-  return <canvas ref={ref} />;
+  const ref=useRef(); const chartRef=useRef();
+  useEffect(()=>{
+    if(!ref.current||!data.length)return;
+    if(chartRef.current)chartRef.current.destroy();
+    chartRef.current=new Chart(ref.current,{type:'bar',data:{labels:data.map(d=>d.month),datasets:[
+      {label:'매출',data:data.map(d=>d.revenue),backgroundColor:'rgba(99,102,241,0.8)',borderRadius:6},
+      {label:'원가',data:data.map(d=>d.cost),backgroundColor:'rgba(239,68,68,0.6)',borderRadius:6},
+      {label:'순수익',data:data.map(d=>d.profit),backgroundColor:'rgba(34,197,94,0.8)',borderRadius:6},
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:12,family:'Inter'},padding:16}}},scales:{y:{ticks:{callback:v=>`$${v.toLocaleString()}`,font:{size:11}},grid:{color:'rgba(0,0,0,0.05)'}},x:{ticks:{font:{size:11}},grid:{display:false}}}}});
+    return()=>{if(chartRef.current)chartRef.current.destroy();};
+  },[data]);
+  return <canvas ref={ref}/>;
 }
 
-/* ── Main App ── */
-function App() {
-  const [locations, setLocations] = useState(() => load('sf-locations', INITIAL_LOCATIONS));
-  const [items, setItems]         = useState(() => load('sf-items', INITIAL_ITEMS));
-  const [stock, setStock]         = useState(() => load('sf-stock', INITIAL_STOCK));
-  const [movements, setMovements] = useState(() => load('sf-movements', []));
-  const [tab, setTab]             = useState('inventory');
-  const [itemModal, setItemModal] = useState(null);
-  const [locModal, setLocModal]   = useState(false);
-  const [movModal, setMovModal]   = useState(null);
-  const [toast, setToast]         = useState(null);
-  const [movSearch, setMovSearch] = useState('');
-  const [movFilter, setMovFilter] = useState('전체');
-  const [locFilter, setLocFilter] = useState('전체');
-  const [revenueYear, setRevenueYear] = useState(new Date().getFullYear());
-  const [nextItemId, setNextItemId] = useState(() => Math.max(...load('sf-items', INITIAL_ITEMS).map(i => i.id), 0) + 1);
-  const [nextLocId, setNextLocId]   = useState(() => Math.max(...load('sf-locations', INITIAL_LOCATIONS).map(l => l.id), 0) + 1);
+/* ── App ── */
+function App({ currentUser, onLogout }) {
+  const [locations,setLocations]=useState(()=>load('sf-locations',INIT_LOCS));
+  const [items,setItems]=useState(()=>load('sf-items',INIT_ITEMS));
+  const [stock,setStock]=useState(()=>load('sf-stock',INIT_STOCK));
+  const [movements,setMovements]=useState(()=>load('sf-movements',[]));
+  const [suppliers,setSuppliers]=useState(()=>load('sf-suppliers',[]));
+  const [orders,setOrders]=useState(()=>load('sf-orders',[]));
+  const [images,setImages]=useState(()=>load('sf-images',{}));
+  const [tab,setTab]=useState('inventory');
+  const [itemModal,setItemModal]=useState(null);
+  const [locModal,setLocModal]=useState(false);
+  const [movModal,setMovModal]=useState(null);
+  const [supplierModal,setSupplierModal]=useState(null);
+  const [orderModal,setOrderModal]=useState(null);
+  const [cancelConfirm,setCancelConfirm]=useState(null);
+  const [userModal,setUserModal]=useState(null);
+  const [users,setUsers]=useState(()=>load('sf-users',[]));
 
-  useEffect(() => { localStorage.setItem('sf-locations', JSON.stringify(locations)); }, [locations]);
-  useEffect(() => { localStorage.setItem('sf-items',     JSON.stringify(items));     }, [items]);
-  useEffect(() => { localStorage.setItem('sf-stock',     JSON.stringify(stock));     }, [stock]);
-  useEffect(() => { localStorage.setItem('sf-movements', JSON.stringify(movements)); }, [movements]);
+  useEffect(()=>{localStorage.setItem('sf-users',JSON.stringify(users));},[users]);
 
-  function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2800); }
-  function getStock(itemId, locId) { return stock[itemId]?.[locId] || 0; }
-  function getSold(itemId, locId) {
-    return movements.filter(m => m.type === '판매' && m.itemId === itemId && m.fromLocationId === locId).reduce((s, m) => s + m.quantity, 0);
+  const isAdmin = currentUser?.role === 'admin';
+
+  function handleSaveUser(form) {
+    if (userModal==='add') {
+      const id = Date.now();
+      setUsers(prev=>[...prev,{...form,id,createdAt:new Date().toISOString()}]);
+      showToast('계정이 추가됐습니다!');
+    } else {
+      setUsers(prev=>prev.map(u=>u.id===userModal.id?{...form,id:u.id,createdAt:u.createdAt}:u));
+      showToast('계정이 수정됐습니다!');
+    }
+    setUserModal(null);
   }
 
-  /* Revenue calculations */
-  const sales = useMemo(() => movements.filter(m => m.type === '판매'), [movements]);
+  function handleDeleteUser(id) {
+    if (id === currentUser.id) { showToast('자신의 계정은 삭제할 수 없어요.'); return; }
+    setUsers(prev=>prev.filter(u=>u.id!==id));
+    showToast('계정이 삭제됐습니다.');
+  }
+  const [toast,setToast]=useState(null);
+  const [movSearch,setMovSearch]=useState('');
+  const [movFilter,setMovFilter]=useState('전체');
+  const [locFilter,setLocFilter]=useState('전체');
+  const [revenueYear,setRevenueYear]=useState(new Date().getFullYear());
+  const [nextItemId,setNextItemId]=useState(()=>Math.max(...load('sf-items',INIT_ITEMS).map(i=>i.id),0)+1);
+  const [nextLocId,setNextLocId]=useState(()=>Math.max(...load('sf-locations',INIT_LOCS).map(l=>l.id),0)+1);
+  const [nextSuppId,setNextSuppId]=useState(()=>Math.max(...load('sf-suppliers',[]).map(s=>s.id),0)+1);
+  const [nextOrdId,setNextOrdId]=useState(()=>Math.max(...load('sf-orders',[]).map(o=>o.id),0)+1);
+  const [pendingImg,setPendingImg]=useState(null);
 
-  const revenueStats = useMemo(() => {
-    const totalRevenue = sales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
-    const totalCost    = sales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
-    const totalProfit  = totalRevenue - totalCost;
-    const margin       = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
-    return { totalRevenue, totalCost, totalProfit, margin };
-  }, [sales]);
+  useEffect(()=>{localStorage.setItem('sf-locations',JSON.stringify(locations));},[locations]);
+  useEffect(()=>{localStorage.setItem('sf-items',JSON.stringify(items));},[items]);
+  useEffect(()=>{localStorage.setItem('sf-stock',JSON.stringify(stock));},[stock]);
+  useEffect(()=>{localStorage.setItem('sf-movements',JSON.stringify(movements));},[movements]);
+  useEffect(()=>{localStorage.setItem('sf-suppliers',JSON.stringify(suppliers));},[suppliers]);
+  useEffect(()=>{localStorage.setItem('sf-orders',JSON.stringify(orders));},[orders]);
+  useEffect(()=>{localStorage.setItem('sf-images',JSON.stringify(images));},[images]);
 
-  const monthlyData = useMemo(() => {
-    const months = Array.from({ length: 12 }, (_, i) => {
-      const monthSales = sales.filter(m => {
-        const d = new Date(m.date);
-        return d.getFullYear() === revenueYear && d.getMonth() === i;
-      });
-      const revenue = monthSales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
-      const cost    = monthSales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
-      return { month: `${i + 1}월`, revenue, cost, profit: revenue - cost, qty: monthSales.reduce((s, m) => s + m.quantity, 0) };
-    });
-    return months;
-  }, [sales, revenueYear]);
+  function showToast(msg){setToast(msg);setTimeout(()=>setToast(null),2800);}
+  function getStock(itemId,locId){return stock[itemId]?.[locId]||0;}
+  function getSold(itemId,locId){return movements.filter(m=>m.type==='판매'&&!m.cancelledBy&&m.itemId===itemId&&m.fromLocationId===locId).reduce((s,m)=>s+m.quantity,0);}
 
-  const activeMonths = useMemo(() => monthlyData.filter(m => m.revenue > 0 || m.qty > 0), [monthlyData]);
+  const sales=useMemo(()=>movements.filter(m=>m.type==='판매'&&!m.cancelledBy),[movements]);
 
-  const locationRevenue = useMemo(() => locations.map(loc => {
-    const locSales = sales.filter(m => m.fromLocationId === loc.id);
-    const revenue  = locSales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
-    const cost     = locSales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
-    return { loc, revenue, cost, profit: revenue - cost, qty: locSales.reduce((s, m) => s + m.quantity, 0) };
-  }), [sales, locations]);
-
-  const skuRevenue = useMemo(() => items.map(item => {
-    const itemSales = sales.filter(m => m.itemId === item.id);
-    const revenue   = itemSales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
-    const cost      = itemSales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
-    return { item, revenue, cost, profit: revenue - cost, qty: itemSales.reduce((s, m) => s + m.quantity, 0) };
-  }), [sales, items]);
-
-  /* Inventory rows */
-  const rows = useMemo(() => {
-    const result = [];
-    items.forEach(item => {
-      locations.forEach(loc => {
-        if (locFilter !== '전체' && String(loc.id) !== locFilter) return;
-        result.push({ item, loc, qty: getStock(item.id, loc.id), sold: getSold(item.id, loc.id) });
+  /* Low stock alerts */
+  const lowStockAlerts=useMemo(()=>{
+    const alerts=[];
+    items.forEach(item=>{
+      if(!item.minStock) return;
+      locations.forEach(loc=>{
+        const qty=getStock(item.id,loc.id);
+        if(qty<=item.minStock) alerts.push({item,loc,qty});
       });
     });
-    return result;
-  }, [items, locations, stock, movements, locFilter]);
+    return alerts;
+  },[items,locations,stock]);
 
-  const globalStats = useMemo(() => {
-    const totalQty  = items.reduce((s, i) => s + locations.reduce((a, l) => a + getStock(i.id, l.id), 0), 0);
-    const totalSold = sales.reduce((s, m) => s + m.quantity, 0);
-    return { totalQty, totalSold };
-  }, [items, locations, stock, sales]);
+  /* Revenue stats */
+  const revenueStats=useMemo(()=>{
+    const totalRevenue=sales.reduce((s,m)=>s+(m.sellPrice||0)*m.quantity,0);
+    const totalCost=sales.reduce((s,m)=>s+(m.costPrice||0)*m.quantity,0);
+    const totalProfit=totalRevenue-totalCost;
+    return{totalRevenue,totalCost,totalProfit,margin:totalRevenue>0?(totalProfit/totalRevenue)*100:0};
+  },[sales]);
 
+  const monthlyData=useMemo(()=>Array.from({length:12},(_,i)=>{
+    const ms=sales.filter(m=>{const d=new Date(m.date);return d.getFullYear()===revenueYear&&d.getMonth()===i;});
+    const revenue=ms.reduce((s,m)=>s+(m.sellPrice||0)*m.quantity,0);
+    const cost=ms.reduce((s,m)=>s+(m.costPrice||0)*m.quantity,0);
+    return{month:`${i+1}월`,revenue,cost,profit:revenue-cost,qty:ms.reduce((s,m)=>s+m.quantity,0)};
+  }),[sales,revenueYear]);
+
+  const locationRevenue=useMemo(()=>locations.map(loc=>{
+    const ls=sales.filter(m=>m.fromLocationId===loc.id);
+    const revenue=ls.reduce((s,m)=>s+(m.sellPrice||0)*m.quantity,0);
+    const cost=ls.reduce((s,m)=>s+(m.costPrice||0)*m.quantity,0);
+    return{loc,revenue,cost,profit:revenue-cost,qty:ls.reduce((s,m)=>s+m.quantity,0)};
+  }),[sales,locations]);
+
+  const skuRevenue=useMemo(()=>items.map(item=>{
+    const is=sales.filter(m=>m.itemId===item.id);
+    const revenue=is.reduce((s,m)=>s+(m.sellPrice||0)*m.quantity,0);
+    const cost=is.reduce((s,m)=>s+(m.costPrice||0)*m.quantity,0);
+    return{item,revenue,cost,profit:revenue-cost,qty:is.reduce((s,m)=>s+m.quantity,0)};
+  }),[sales,items]);
+
+  const rows=useMemo(()=>{
+    const r=[];
+    items.forEach(item=>locations.forEach(loc=>{
+      if(locFilter!=='전체'&&String(loc.id)!==locFilter)return;
+      r.push({item,loc,qty:getStock(item.id,loc.id),sold:getSold(item.id,loc.id)});
+    }));
+    return r;
+  },[items,locations,stock,movements,locFilter]);
+
+  const globalStats=useMemo(()=>({
+    totalQty:items.reduce((s,i)=>s+locations.reduce((a,l)=>a+getStock(i.id,l.id),0),0),
+    totalSold:sales.reduce((s,m)=>s+m.quantity,0),
+  }),[items,locations,stock,sales]);
+
+  /* Handlers */
   function handleSaveItem(form) {
-    if (itemModal === 'add') {
-      const id = nextItemId;
-      setItems(prev => [...prev, { ...form, id }]);
-      setStock(prev => ({ ...prev, [id]: {} }));
-      setNextItemId(n => n + 1);
+    if(itemModal==='add'){
+      const id=nextItemId;
+      setItems(prev=>[...prev,{...form,id}]);
+      setStock(prev=>({...prev,[id]:{}}));
+      if(pendingImg) setImages(prev=>({...prev,[id]:pendingImg}));
+      setNextItemId(n=>n+1);
       showToast('상품이 추가됐습니다!');
     } else {
-      setItems(prev => prev.map(i => i.id === itemModal.id ? { ...form, id: i.id } : i));
+      setItems(prev=>prev.map(i=>i.id===itemModal.id?{...form,id:i.id}:i));
       showToast('상품이 수정됐습니다!');
     }
-    setItemModal(null);
+    setPendingImg(null); setItemModal(null);
+  }
+
+  function handleImage(itemId, base64) {
+    if(itemId==='_new') { setPendingImg(base64); return; }
+    setImages(prev=>({...prev,[itemId]:base64}));
   }
 
   function handleSaveLocation(form) {
-    const id = nextLocId;
-    setLocations(prev => [...prev, { ...form, id }]);
-    setNextLocId(n => n + 1);
-    showToast(`${form.name} 추가됐습니다!`);
-    setLocModal(false);
+    const id=nextLocId;
+    setLocations(prev=>[...prev,{...form,id}]);
+    setNextLocId(n=>n+1);
+    showToast(`${form.name} 추가됐습니다!`); setLocModal(false);
+  }
+
+  function handleSaveSupplier(form) {
+    if(supplierModal&&supplierModal!=='add') {
+      setSuppliers(prev=>prev.map(s=>s.id===supplierModal.id?{...form,id:s.id}:s));
+      showToast('거래처가 수정됐습니다!');
+    } else {
+      const id=nextSuppId;
+      setSuppliers(prev=>[...prev,{...form,id}]);
+      setNextSuppId(n=>n+1);
+      showToast('거래처가 추가됐습니다!');
+    }
+    setSupplierModal(null);
+  }
+
+  function handleSaveOrder(form) {
+    if(orderModal&&orderModal!=='add') {
+      setOrders(prev=>prev.map(o=>o.id===orderModal.id?{...form,id:o.id}:o));
+      showToast('발주가 수정됐습니다!');
+    } else {
+      const id=nextOrdId;
+      setOrders(prev=>[{...form,id,status:'주문중',createdAt:new Date().toISOString()},...prev]);
+      setNextOrdId(n=>n+1);
+      showToast('발주가 등록됐습니다!');
+    }
+    setOrderModal(null);
+  }
+
+  function handleReceiveOrder(order) {
+    setOrders(prev=>prev.map(o=>o.id===order.id?{...o,status:'입고완료',receivedAt:new Date().toISOString()}:o));
+    const mov={id:Date.now(),date:new Date().toISOString(),type:'입고',itemId:order.itemId,fromLocationId:null,toLocationId:order.toLocationId,quantity:order.quantity,sellPrice:null,costPrice:order.unitCost,memo:`[발주 입고] ${suppliers.find(s=>s.id===order.supplierId)?.name||''}`,cancelledBy:null};
+    setMovements(prev=>[mov,...prev]);
+    setStock(prev=>{const n=JSON.parse(JSON.stringify(prev));if(!n[order.itemId])n[order.itemId]={};if(order.toLocationId)n[order.itemId][order.toLocationId]=(n[order.itemId][order.toLocationId]||0)+order.quantity;return n;});
+    showToast('📥 입고 완료! 재고에 반영됐습니다.');
   }
 
   function handleMovement(form) {
-    setMovements(prev => [{ ...form, id: Date.now(), date: new Date().toISOString() }, ...prev]);
-    setStock(prev => {
-      const next = JSON.parse(JSON.stringify(prev));
-      if (!next[form.itemId]) next[form.itemId] = {};
-      if (form.fromLocationId) next[form.itemId][form.fromLocationId] = Math.max(0, (next[form.itemId][form.fromLocationId] || 0) - form.quantity);
-      if (form.toLocationId)   next[form.itemId][form.toLocationId]   = (next[form.itemId][form.toLocationId] || 0) + form.quantity;
-      return next;
-    });
-    const item = items.find(i => i.id === form.itemId);
+    setMovements(prev=>[{...form,id:Date.now(),cancelledBy:null},...prev]);
+    setStock(prev=>{const n=JSON.parse(JSON.stringify(prev));if(!n[form.itemId])n[form.itemId]={};if(form.fromLocationId)n[form.itemId][form.fromLocationId]=Math.max(0,(n[form.itemId][form.fromLocationId]||0)-form.quantity);if(form.toLocationId)n[form.itemId][form.toLocationId]=(n[form.itemId][form.toLocationId]||0)+form.quantity;return n;});
+    const item=items.find(i=>i.id===form.itemId);
     showToast(`${MOV_ICON[form.type]} ${item?.name} ${form.quantity}개 ${form.type} 완료!`);
     setMovModal(null);
   }
 
-  const filteredMovements = useMemo(() => movements.filter(m => {
-    const item    = items.find(i => i.id === m.itemId);
-    const fromLoc = locations.find(l => l.id === m.fromLocationId);
-    const toLoc   = locations.find(l => l.id === m.toLocationId);
-    const str = [item?.name, item?.sku, fromLoc?.name, toLoc?.name, m.memo].filter(Boolean).join(' ').toLowerCase();
-    return str.includes(movSearch.toLowerCase()) && (movFilter === '전체' || m.type === movFilter);
-  }), [movements, items, locations, movSearch, movFilter]);
-
-  function formatDate(iso) {
-    const d = new Date(iso);
-    return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  function handleCancel(original) {
+    const cancelId=Date.now();
+    setMovements(prev=>[{id:cancelId,date:new Date().toISOString(),type:'취소',itemId:original.itemId,fromLocationId:original.toLocationId,toLocationId:original.fromLocationId,quantity:original.quantity,sellPrice:null,costPrice:null,memo:`[취소] 원본 #${original.id}`,cancelOf:original.id,cancelledBy:null},...prev.map(m=>m.id===original.id?{...m,cancelledBy:cancelId}:m)]);
+    setStock(prev=>{const n=JSON.parse(JSON.stringify(prev));if(!n[original.itemId])n[original.itemId]={};if(original.fromLocationId)n[original.itemId][original.fromLocationId]=(n[original.itemId][original.fromLocationId]||0)+original.quantity;if(original.toLocationId)n[original.itemId][original.toLocationId]=Math.max(0,(n[original.itemId][original.toLocationId]||0)-original.quantity);return n;});
+    showToast('↩️ 취소 처리됐습니다. 재고가 원복됐어요.');
+    setCancelConfirm(null);
   }
 
-  function StockBadge({ qty }) {
-    if (qty === 0) return <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">품절</span>;
-    return <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">정상</span>;
+  const filteredMovements=useMemo(()=>movements.filter(m=>{
+    const item=items.find(i=>i.id===m.itemId);
+    const fl=locations.find(l=>l.id===m.fromLocationId);
+    const tl=locations.find(l=>l.id===m.toLocationId);
+    const str=[item?.name,item?.sku,fl?.name,tl?.name,m.memo].filter(Boolean).join(' ').toLowerCase();
+    return str.includes(movSearch.toLowerCase())&&(movFilter==='전체'||m.type===movFilter||(movFilter==='취소됨'&&m.cancelledBy));
+  }),[movements,items,locations,movSearch,movFilter]);
+
+  function formatDate(iso){if(!iso)return'—';const d=new Date(iso);return`${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;}
+
+  function StockBadge({qty,minStock}){
+    if(qty===0)return<span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">품절</span>;
+    if(minStock&&qty<=minStock)return<span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-700">부족</span>;
+    return<span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">정상</span>;
   }
 
-  const TABS = [['inventory','📦 재고 현황'],['revenue','💰 수익 현황'],['movements','📋 이동 이력']];
+  /* CSV Exports */
+  function exportInventory(){
+    exportCSV('inventory.csv',['상품명','SKU','공급업체','위치','재고수량','판매수량','입고가','판매가','상태'],
+      rows.map(r=>[r.item.name,r.item.sku||'',r.item.supplier||'',r.loc.name,r.qty,r.sold,r.item.costPrice||'',r.item.sellPrice||'',r.qty===0?'품절':r.item.minStock&&r.qty<=r.item.minStock?'부족':'정상']));
+    showToast('📥 재고 CSV 다운로드!');
+  }
+
+  function exportMovements(){
+    exportCSV('movements.csv',['일시','유형','상품명','SKU','수량','판매가','매출','출발','도착','메모'],
+      filteredMovements.map(m=>{
+        const item=items.find(i=>i.id===m.itemId);
+        const fl=locations.find(l=>l.id===m.fromLocationId);
+        const tl=locations.find(l=>l.id===m.toLocationId);
+        const rev=m.type==='판매'&&!m.cancelledBy?(m.sellPrice||0)*m.quantity:0;
+        return[formatDate(m.date),m.type+(m.cancelledBy?' (취소됨)':''),item?.name||'',item?.sku||'',m.quantity,m.sellPrice??'',rev||'',fl?.name||'',tl?.name||'',m.memo||''];
+      }));
+    showToast('📥 이동이력 CSV 다운로드!');
+  }
+
+  function exportRevenue(){
+    exportCSV('revenue.csv',['월','판매수량','매출','원가','순수익','마진율'],
+      monthlyData.map(m=>[m.month,m.qty,m.revenue.toFixed(2),m.cost.toFixed(2),m.profit.toFixed(2),m.revenue>0?((m.profit/m.revenue)*100).toFixed(1)+'%':'']));
+    showToast('📥 수익 CSV 다운로드!');
+  }
+
+  const TABS=[['inventory','📦 재고'],['revenue','💰 수익'],['movements','📋 이동이력'],['orders','🛒 발주관리'],['suppliers','🏢 거래처'],...(isAdmin?[['settings','⚙️ 설정']]:[])];
+  const allowedTabs = isAdmin ? TABS.map(t=>t[0]) : ['inventory','movements'];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -455,131 +828,130 @@ function App() {
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-lg">📦</div>
-            <div>
-              <h1 className="text-lg font-bold text-gray-900">StockFlow</h1>
-              <p className="text-xs text-gray-400">멀티 위치 재고·수익 관리</p>
-            </div>
+            <div><h1 className="text-lg font-bold text-gray-900">StockFlow</h1><p className="text-xs text-gray-400">재고·수익·거래처 통합 관리</p></div>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => setLocModal(true)} className="border border-gray-200 text-gray-600 px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-50">🏪 위치 추가</button>
-            <button onClick={() => setMovModal({})} className="border border-indigo-200 text-indigo-600 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-50">🔄 입출고</button>
-            <button onClick={() => setItemModal('add')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-sm">+ 상품 추가</button>
+          <div className="flex items-center gap-2">
+            <button onClick={()=>setLocModal(true)} className="border border-gray-200 text-gray-600 px-3 py-2 rounded-xl text-sm font-medium hover:bg-gray-50">🏪 위치</button>
+            <button onClick={()=>setMovModal({})} className="border border-indigo-200 text-indigo-600 px-3 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-50">🔄 입출고</button>
+            <button onClick={()=>setItemModal('add')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-sm">+ 상품</button>
+            <div className="w-px h-6 bg-gray-200 mx-1"/>
+            <div className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2">
+              <div className="w-7 h-7 bg-indigo-100 rounded-lg flex items-center justify-center text-sm font-bold text-indigo-600">{currentUser?.name?.[0]||'?'}</div>
+              <div className="hidden md:block">
+                <p className="text-xs font-semibold text-gray-700 leading-tight">{currentUser?.name}</p>
+                <p className="text-xs text-gray-400">{currentUser?.role==='admin'?'👑 Admin':'👤 Staff'}</p>
+              </div>
+            </div>
+            <button onClick={onLogout} className="border border-gray-200 text-gray-500 px-3 py-2 rounded-xl text-sm hover:bg-gray-100 transition-colors">로그아웃</button>
           </div>
         </div>
-        <div className="max-w-7xl mx-auto px-6 flex gap-1">
-          {TABS.map(([key, label]) => (
-            <button key={key} onClick={() => setTab(key)}
-              className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === key ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+        <div className="max-w-7xl mx-auto px-6 flex gap-1 overflow-x-auto">
+          {TABS.map(([key,label])=>(
+            <button key={key} onClick={()=>setTab(key)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${tab===key?'border-indigo-600 text-indigo-600':'border-transparent text-gray-400 hover:text-gray-600'}`}>
               {label}
+              {key==='orders'&&orders.filter(o=>o.status==='주문중').length>0&&<span className="ml-1.5 bg-amber-500 text-white text-xs rounded-full px-1.5">{orders.filter(o=>o.status==='주문중').length}</span>}
             </button>
           ))}
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
-
-        {/* ══ INVENTORY TAB ══ */}
-        {tab === 'inventory' && (
-          <>
-            {/* Quick stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
-              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                <p className="text-sm text-gray-500">전체 SKU</p>
-                <p className="text-3xl font-bold text-gray-800 mt-1">{items.length}</p>
-                <p className="text-xs text-gray-400 mt-1">등록된 상품 종류</p>
-              </div>
-              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                <p className="text-sm text-gray-500">전체 재고</p>
-                <p className="text-3xl font-bold text-indigo-600 mt-1">{fmtN(globalStats.totalQty)}</p>
-                <p className="text-xs text-gray-400 mt-1">모든 위치 합산</p>
-              </div>
-              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                <p className="text-sm text-gray-500">누적 판매</p>
-                <p className="text-3xl font-bold text-purple-600 mt-1">{fmtN(globalStats.totalSold)}</p>
-                <p className="text-xs text-gray-400 mt-1">전체 판매 수량</p>
-              </div>
-              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                <p className="text-sm text-gray-500">누적 매출</p>
-                <p className="text-2xl font-bold text-green-600 mt-1">{fmt(revenueStats.totalRevenue)}</p>
-                <p className="text-xs text-gray-400 mt-1">순수익 {fmt(revenueStats.totalProfit)}</p>
+      {/* Low stock alert */}
+      {lowStockAlerts.length>0&&(
+        <div className="max-w-7xl mx-auto px-6 pt-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3 flex items-start gap-3">
+            <span className="text-lg mt-0.5">⚠️</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-800">재고 부족 알림 ({lowStockAlerts.length}건)</p>
+              <div className="flex flex-wrap gap-2 mt-1.5">
+                {lowStockAlerts.map((a,i)=>(
+                  <span key={i} className="text-xs bg-amber-100 text-amber-700 rounded-lg px-2.5 py-1">
+                    {a.item.sku||a.item.name} @ {a.loc.name} — <strong>{a.qty}</strong>개 남음
+                  </span>
+                ))}
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* Location chips */}
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+
+        {/* ══ INVENTORY ══ */}
+        {tab==='inventory'&&(
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
+              {[
+                {label:'전체 SKU',val:items.length,sub:'등록된 상품',color:'text-gray-800'},
+                {label:'전체 재고',val:fmtN(globalStats.totalQty),sub:'모든 위치 합산',color:'text-indigo-600'},
+                {label:'누적 판매',val:fmtN(globalStats.totalSold),sub:'판매 수량',color:'text-purple-600'},
+                {label:'누적 매출',val:fmt(revenueStats.totalRevenue),sub:`순수익 ${fmt(revenueStats.totalProfit)}`,color:'text-green-600'},
+              ].map(s=>(
+                <div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                  <p className="text-sm text-gray-500">{s.label}</p>
+                  <p className={`text-2xl font-bold mt-1 ${s.color}`}>{s.val}</p>
+                  <p className="text-xs text-gray-400 mt-1">{s.sub}</p>
+                </div>
+              ))}
+            </div>
             <div className="flex flex-wrap gap-3 fade-in">
-              {locations.map(loc => {
-                const qty  = items.reduce((s, i) => s + getStock(i.id, loc.id), 0);
-                const sold = sales.filter(m => m.fromLocationId === loc.id).reduce((s, m) => s + m.quantity, 0);
-                const rev  = sales.filter(m => m.fromLocationId === loc.id).reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
-                return (
+              {locations.map(loc=>{
+                const qty=items.reduce((s,i)=>s+getStock(i.id,loc.id),0);
+                const sold=sales.filter(m=>m.fromLocationId===loc.id).reduce((s,m)=>s+m.quantity,0);
+                const rev=sales.filter(m=>m.fromLocationId===loc.id).reduce((s,m)=>s+(m.sellPrice||0)*m.quantity,0);
+                return(
                   <div key={loc.id} className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-100 flex items-center gap-3">
-                    <span className="text-xl">{loc.type === 'warehouse' ? '🏭' : '🏪'}</span>
+                    <span className="text-xl">{loc.type==='warehouse'?'🏭':'🏪'}</span>
                     <div>
                       <p className="text-sm font-semibold text-gray-800">{loc.name}</p>
-                      <p className="text-xs text-gray-400">
-                        재고 <span className="font-semibold text-indigo-600">{fmtN(qty)}</span>
-                        {' · '}판매 <span className="font-semibold text-purple-600">{fmtN(sold)}</span>
-                        {rev > 0 && <> · 매출 <span className="font-semibold text-green-600">{fmt(rev)}</span></>}
-                      </p>
+                      <p className="text-xs text-gray-400">재고 <span className="font-semibold text-indigo-600">{fmtN(qty)}</span> · 판매 <span className="font-semibold text-purple-600">{fmtN(sold)}</span>{rev>0&&<> · 매출 <span className="font-semibold text-green-600">{fmt(rev)}</span></>}</p>
                     </div>
                   </div>
                 );
               })}
             </div>
-
-            {/* Inventory Table */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
-              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4">
                 <h2 className="font-semibold text-gray-800">SKU × Location 재고</h2>
-                <select value={locFilter} onChange={e => setLocFilter(e.target.value)}
-                  className="border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                  <option value="전체">전체 위치</option>
-                  {locations.map(l => <option key={l.id} value={l.id}>{l.type === 'warehouse' ? '🏭' : '🏪'} {l.name}</option>)}
-                </select>
+                <div className="flex gap-2">
+                  <select value={locFilter} onChange={e=>setLocFilter(e.target.value)} className="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <option value="전체">전체 위치</option>
+                    {locations.map(l=><option key={l.id} value={l.id}>{l.type==='warehouse'?'🏭':'🏪'} {l.name}</option>)}
+                  </select>
+                  <button onClick={exportInventory} className="border border-gray-200 text-gray-600 px-3 py-2 rounded-xl text-sm hover:bg-gray-50">⬇️ CSV</button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
-                      {['상품명','SKU','Location','공급업체','재고수량','판매수량','입고가','판매가','상태','관리'].map(h => (
-                        <th key={h} className={`px-5 py-3.5 text-xs font-semibold text-gray-500 uppercase tracking-wide ${['재고수량','판매수량','입고가','판매가'].includes(h) ? 'text-right' : 'text-left'}`}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
+                  <thead><tr className="bg-gray-50 border-b border-gray-100">
+                    {['','상품명','SKU','Location','공급업체','재고','판매','입고가','판매가','상태','관리'].map(h=>(
+                      <th key={h} className={`px-4 py-3.5 text-xs font-semibold text-gray-500 uppercase tracking-wide ${['재고','판매','입고가','판매가'].includes(h)?'text-right':'text-left'}`}>{h}</th>
+                    ))}
+                  </tr></thead>
                   <tbody>
-                    {items.map((item, itemIdx) => {
-                      const itemRows = rows.filter(r => r.item.id === item.id);
-                      if (!itemRows.length) return null;
-                      return itemRows.map((row, rowIdx) => (
-                        <tr key={`${item.id}-${row.loc.id}`}
-                          className={`hover:bg-gray-50/50 transition-colors ${rowIdx < itemRows.length - 1 ? 'border-b border-gray-50' : itemIdx < items.length - 1 ? 'border-b-2 border-gray-100' : ''}`}>
-                          <td className="px-5 py-3.5">
-                            {rowIdx === 0
-                              ? <span className="text-sm font-semibold text-gray-800">{item.name}</span>
-                              : <span className="text-gray-300 text-sm pl-2">↳</span>}
+                    {items.map((item,ii)=>{
+                      const itemRows=rows.filter(r=>r.item.id===item.id);
+                      if(!itemRows.length)return null;
+                      return itemRows.map((row,ri)=>(
+                        <tr key={`${item.id}-${row.loc.id}`} className={`hover:bg-gray-50/50 transition-colors ${ri<itemRows.length-1?'border-b border-gray-50':ii<items.length-1?'border-b-2 border-gray-100':''}`}>
+                          <td className="px-4 py-3">
+                            {ri===0&&(images[item.id]
+                              ?<img src={images[item.id]} className="w-9 h-9 rounded-lg object-cover"/>
+                              :<div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center text-base">📦</div>)}
                           </td>
-                          <td className="px-5 py-3.5">
-                            {rowIdx === 0 && item.sku && <span className="px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-mono font-semibold">{item.sku}</span>}
-                          </td>
-                          <td className="px-5 py-3.5">
-                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${row.loc.type === 'warehouse' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
-                              {row.loc.type === 'warehouse' ? '🏭' : '🏪'} {row.loc.name}
-                            </span>
-                          </td>
-                          <td className="px-5 py-3.5 text-sm text-gray-500">{rowIdx === 0 ? (item.supplier || '—') : ''}</td>
-                          <td className="px-5 py-3.5 text-right"><span className={`text-sm font-bold ${row.qty === 0 ? 'text-red-400' : 'text-gray-800'}`}>{fmtN(row.qty)}</span></td>
-                          <td className="px-5 py-3.5 text-right"><span className={`text-sm font-semibold ${row.sold > 0 ? 'text-purple-600' : 'text-gray-300'}`}>{fmtN(row.sold)}</span></td>
-                          <td className="px-5 py-3.5 text-right text-sm text-gray-500">{rowIdx === 0 && item.costPrice > 0 ? fmt(item.costPrice) : rowIdx === 0 ? '—' : ''}</td>
-                          <td className="px-5 py-3.5 text-right text-sm text-gray-700 font-medium">{rowIdx === 0 && item.sellPrice > 0 ? fmt(item.sellPrice) : rowIdx === 0 ? '—' : ''}</td>
-                          <td className="px-5 py-3.5"><StockBadge qty={row.qty} /></td>
-                          <td className="px-5 py-3.5">
+                          <td className="px-4 py-3">{ri===0?<span className="text-sm font-semibold text-gray-800">{item.name}</span>:<span className="text-gray-300 text-sm pl-2">↳</span>}</td>
+                          <td className="px-4 py-3">{ri===0&&item.sku&&<span className="px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-mono font-semibold">{item.sku}</span>}</td>
+                          <td className="px-4 py-3"><span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${row.loc.type==='warehouse'?'bg-blue-50 text-blue-700':'bg-amber-50 text-amber-700'}`}>{row.loc.type==='warehouse'?'🏭':'🏪'} {row.loc.name}</span></td>
+                          <td className="px-4 py-3 text-sm text-gray-500">{ri===0?(item.supplier||'—'):''}</td>
+                          <td className="px-4 py-3 text-right"><span className={`text-sm font-bold ${row.qty===0?'text-red-400':'text-gray-800'}`}>{fmtN(row.qty)}</span></td>
+                          <td className="px-4 py-3 text-right"><span className={`text-sm font-semibold ${row.sold>0?'text-purple-600':'text-gray-300'}`}>{fmtN(row.sold)}</span></td>
+                          <td className="px-4 py-3 text-right text-sm text-gray-500">{ri===0&&item.costPrice>0?fmt(item.costPrice):ri===0?'—':''}</td>
+                          <td className="px-4 py-3 text-right text-sm font-medium text-gray-700">{ri===0&&item.sellPrice>0?fmt(item.sellPrice):ri===0?'—':''}</td>
+                          <td className="px-4 py-3"><StockBadge qty={row.qty} minStock={item.minStock}/></td>
+                          <td className="px-4 py-3">
                             <div className="flex gap-1">
-                              <button onClick={() => setMovModal({ itemId: item.id, locId: row.loc.id })}
-                                className="text-xs text-indigo-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 whitespace-nowrap">🔄 입출고</button>
-                              {rowIdx === 0 && (
-                                <button onClick={() => setItemModal(item)}
-                                  className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100">수정</button>
-                              )}
+                              <button onClick={()=>setMovModal({itemId:item.id,locId:row.loc.id})} className="text-xs text-indigo-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 whitespace-nowrap">🔄 입출고</button>
+                              {ri===0&&<button onClick={()=>setItemModal(item)} className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100">수정</button>}
                             </div>
                           </td>
                         </tr>
@@ -596,238 +968,363 @@ function App() {
           </>
         )}
 
-        {/* ══ REVENUE TAB ══ */}
-        {tab === 'revenue' && (
+        {/* ══ REVENUE ══ */}
+        {tab==='revenue'&&(
           <div className="space-y-6 fade-in">
-            {/* Summary cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {[
-                { label: '총 매출', value: fmt(revenueStats.totalRevenue), sub: '판매 합계', color: 'text-indigo-600', bg: 'bg-indigo-50', icon: '💵' },
-                { label: '총 원가', value: fmt(revenueStats.totalCost), sub: '입고가 합계', color: 'text-red-500', bg: 'bg-red-50', icon: '📦' },
-                { label: '순수익', value: fmt(revenueStats.totalProfit), sub: '매출 - 원가', color: 'text-green-600', bg: 'bg-green-50', icon: '💰' },
-                { label: '마진율', value: `${revenueStats.margin.toFixed(1)}%`, sub: '순수익 / 매출', color: 'text-purple-600', bg: 'bg-purple-50', icon: '📊' },
-              ].map(s => (
+              {[{label:'총 매출',val:fmt(revenueStats.totalRevenue),sub:'판매 합계',c:'text-indigo-600',bg:'bg-indigo-50',icon:'💵'},
+                {label:'총 원가',val:fmt(revenueStats.totalCost),sub:'입고가 합계',c:'text-red-500',bg:'bg-red-50',icon:'📦'},
+                {label:'순수익',val:fmt(revenueStats.totalProfit),sub:'매출-원가',c:'text-green-600',bg:'bg-green-50',icon:'💰'},
+                {label:'마진율',val:`${revenueStats.margin.toFixed(1)}%`,sub:'순수익/매출',c:'text-purple-600',bg:'bg-purple-50',icon:'📊'},
+              ].map(s=>(
                 <div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className={`w-8 h-8 rounded-lg ${s.bg} flex items-center justify-center text-base`}>{s.icon}</span>
-                    <p className="text-sm text-gray-500 font-medium">{s.label}</p>
-                  </div>
-                  <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+                  <div className="flex items-center gap-2 mb-2"><span className={`w-8 h-8 rounded-lg ${s.bg} flex items-center justify-center`}>{s.icon}</span><p className="text-sm text-gray-500 font-medium">{s.label}</p></div>
+                  <p className={`text-2xl font-bold ${s.c}`}>{s.val}</p>
                   <p className="text-xs text-gray-400 mt-1">{s.sub}</p>
                 </div>
               ))}
             </div>
-
-            {/* Monthly chart */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="font-semibold text-gray-800">월별 수익 현황</h2>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setRevenueYear(y => y - 1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">‹</button>
+                  <button onClick={()=>setRevenueYear(y=>y-1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">‹</button>
                   <span className="text-sm font-semibold text-gray-700 w-12 text-center">{revenueYear}</span>
-                  <button onClick={() => setRevenueYear(y => y + 1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">›</button>
+                  <button onClick={()=>setRevenueYear(y=>y+1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">›</button>
+                  <button onClick={exportRevenue} className="border border-gray-200 text-gray-600 px-3 py-1.5 rounded-xl text-sm hover:bg-gray-50 ml-2">⬇️ CSV</button>
                 </div>
               </div>
-              {activeMonths.length > 0 ? (
-                <div style={{height: 280}}><MonthlyChart data={monthlyData} /></div>
-              ) : (
+              {monthlyData.some(m=>m.qty>0)?<div style={{height:280}}><MonthlyChart data={monthlyData}/></div>:(
                 <div className="h-48 flex flex-col items-center justify-center text-gray-400">
                   <span className="text-4xl mb-3">📈</span>
                   <p className="text-sm">{revenueYear}년 판매 기록이 없습니다.</p>
-                  <button onClick={() => setMovModal({})} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">판매 기록 추가하기 →</button>
+                  <button onClick={()=>setMovModal({})} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">판매 기록 추가하기 →</button>
                 </div>
               )}
             </div>
-
-            {/* Monthly table */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100">
-                <h2 className="font-semibold text-gray-800">월별 상세 ({revenueYear})</h2>
-              </div>
+              <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-semibold text-gray-800">월별 상세 ({revenueYear})</h2></div>
               <table className="w-full">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-100">
-                    {['월','판매 수량','매출','원가','순수익','마진율'].map(h => (
-                      <th key={h} className={`px-6 py-3.5 text-xs font-semibold text-gray-500 uppercase tracking-wide ${h === '월' ? 'text-left' : 'text-right'}`}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
+                <thead><tr className="bg-gray-50 border-b border-gray-100">{['월','판매수량','매출','원가','순수익','마진율'].map(h=><th key={h} className={`px-6 py-3.5 text-xs font-semibold text-gray-500 uppercase tracking-wide ${h==='월'?'text-left':'text-right'}`}>{h}</th>)}</tr></thead>
                 <tbody className="divide-y divide-gray-50">
-                  {monthlyData.map((m, i) => {
-                    const margin = m.revenue > 0 ? (m.profit / m.revenue) * 100 : 0;
-                    const hasData = m.qty > 0 || m.revenue > 0;
-                    return (
-                      <tr key={i} className={`transition-colors ${hasData ? 'hover:bg-gray-50/50' : 'opacity-40'}`}>
-                        <td className="px-6 py-3.5 text-sm font-medium text-gray-700">{m.month}</td>
-                        <td className="px-6 py-3.5 text-right text-sm text-gray-600">{fmtN(m.qty)}</td>
-                        <td className="px-6 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(m.revenue)}</td>
-                        <td className="px-6 py-3.5 text-right text-sm text-red-400">{fmt(m.cost)}</td>
-                        <td className="px-6 py-3.5 text-right text-sm font-bold text-green-600">{fmt(m.profit)}</td>
-                        <td className="px-6 py-3.5 text-right">
-                          <span className={`text-sm font-semibold ${margin >= 30 ? 'text-green-600' : margin > 0 ? 'text-amber-500' : 'text-gray-300'}`}>
-                            {hasData ? `${margin.toFixed(1)}%` : '—'}
-                          </span>
-                        </td>
-                      </tr>
-                    );
+                  {monthlyData.map((m,i)=>{const mg=m.revenue>0?(m.profit/m.revenue)*100:0;const has=m.qty>0||m.revenue>0;return(
+                    <tr key={i} className={`${has?'hover:bg-gray-50/50':'opacity-40'}`}>
+                      <td className="px-6 py-3.5 text-sm font-medium text-gray-700">{m.month}</td>
+                      <td className="px-6 py-3.5 text-right text-sm text-gray-600">{fmtN(m.qty)}</td>
+                      <td className="px-6 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(m.revenue)}</td>
+                      <td className="px-6 py-3.5 text-right text-sm text-red-400">{fmt(m.cost)}</td>
+                      <td className="px-6 py-3.5 text-right text-sm font-bold text-green-600">{fmt(m.profit)}</td>
+                      <td className="px-6 py-3.5 text-right text-sm font-semibold">{has?`${mg.toFixed(1)}%`:'—'}</td>
+                    </tr>);
                   })}
-                  {/* Total row */}
                   <tr className="bg-gray-50 border-t-2 border-gray-200 font-semibold">
                     <td className="px-6 py-4 text-sm text-gray-700">합계</td>
-                    <td className="px-6 py-4 text-right text-sm text-gray-700">{fmtN(monthlyData.reduce((s,m)=>s+m.qty,0))}</td>
+                    <td className="px-6 py-4 text-right text-sm">{fmtN(monthlyData.reduce((s,m)=>s+m.qty,0))}</td>
                     <td className="px-6 py-4 text-right text-sm text-indigo-700">{fmt(monthlyData.reduce((s,m)=>s+m.revenue,0))}</td>
                     <td className="px-6 py-4 text-right text-sm text-red-500">{fmt(monthlyData.reduce((s,m)=>s+m.cost,0))}</td>
                     <td className="px-6 py-4 text-right text-sm text-green-700">{fmt(monthlyData.reduce((s,m)=>s+m.profit,0))}</td>
-                    <td className="px-6 py-4 text-right text-sm text-gray-500">
-                      {monthlyData.reduce((s,m)=>s+m.revenue,0) > 0
-                        ? `${((monthlyData.reduce((s,m)=>s+m.profit,0)/monthlyData.reduce((s,m)=>s+m.revenue,0))*100).toFixed(1)}%`
-                        : '—'}
-                    </td>
+                    <td className="px-6 py-4 text-right text-sm text-gray-500">{monthlyData.reduce((s,m)=>s+m.revenue,0)>0?`${((monthlyData.reduce((s,m)=>s+m.profit,0)/monthlyData.reduce((s,m)=>s+m.revenue,0))*100).toFixed(1)}%`:'—'}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
-
-            {/* SKU breakdown */}
             <div className="grid md:grid-cols-2 gap-6">
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-semibold text-gray-800">SKU별 수익</h2></div>
-                <table className="w-full">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
-                      {['상품','판매수량','매출','순수익'].map(h => (
-                        <th key={h} className={`px-5 py-3 text-xs font-semibold text-gray-500 uppercase ${h === '상품' ? 'text-left' : 'text-right'}`}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {skuRevenue.map(({ item, revenue, profit, qty }) => (
-                      <tr key={item.id} className="hover:bg-gray-50/50">
-                        <td className="px-5 py-3.5">
-                          <p className="text-sm font-medium text-gray-800 leading-tight">{item.name}</p>
-                          {item.sku && <span className="text-xs text-indigo-500 font-mono">{item.sku}</span>}
-                        </td>
-                        <td className="px-5 py-3.5 text-right text-sm text-gray-600">{fmtN(qty)}</td>
-                        <td className="px-5 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(revenue)}</td>
-                        <td className="px-5 py-3.5 text-right text-sm font-bold text-green-600">{fmt(profit)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{['상품','판매수량','매출','순수익'].map(h=><th key={h} className={`px-5 py-3 text-xs font-semibold text-gray-500 uppercase ${h==='상품'?'text-left':'text-right'}`}>{h}</th>)}</tr></thead>
+                <tbody className="divide-y divide-gray-50">{skuRevenue.map(({item,revenue,profit,qty})=>(
+                  <tr key={item.id} className="hover:bg-gray-50/50">
+                    <td className="px-5 py-3.5"><p className="text-sm font-medium text-gray-800">{item.name}</p>{item.sku&&<span className="text-xs text-indigo-500 font-mono">{item.sku}</span>}</td>
+                    <td className="px-5 py-3.5 text-right text-sm text-gray-600">{fmtN(qty)}</td>
+                    <td className="px-5 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(revenue)}</td>
+                    <td className="px-5 py-3.5 text-right text-sm font-bold text-green-600">{fmt(profit)}</td>
+                  </tr>))}</tbody></table>
               </div>
-
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-semibold text-gray-800">위치별 수익</h2></div>
-                <table className="w-full">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
-                      {['위치','판매수량','매출','순수익'].map(h => (
-                        <th key={h} className={`px-5 py-3 text-xs font-semibold text-gray-500 uppercase ${h === '위치' ? 'text-left' : 'text-right'}`}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {locationRevenue.map(({ loc, revenue, profit, qty }) => (
-                      <tr key={loc.id} className="hover:bg-gray-50/50">
-                        <td className="px-5 py-3.5">
-                          <div className="flex items-center gap-2">
-                            <span>{loc.type === 'warehouse' ? '🏭' : '🏪'}</span>
-                            <span className="text-sm font-medium text-gray-800">{loc.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3.5 text-right text-sm text-gray-600">{fmtN(qty)}</td>
-                        <td className="px-5 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(revenue)}</td>
-                        <td className="px-5 py-3.5 text-right text-sm font-bold text-green-600">{fmt(profit)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{['위치','판매수량','매출','순수익'].map(h=><th key={h} className={`px-5 py-3 text-xs font-semibold text-gray-500 uppercase ${h==='위치'?'text-left':'text-right'}`}>{h}</th>)}</tr></thead>
+                <tbody className="divide-y divide-gray-50">{locationRevenue.map(({loc,revenue,profit,qty})=>(
+                  <tr key={loc.id} className="hover:bg-gray-50/50">
+                    <td className="px-5 py-3.5 text-sm font-medium text-gray-800">{loc.type==='warehouse'?'🏭':'🏪'} {loc.name}</td>
+                    <td className="px-5 py-3.5 text-right text-sm text-gray-600">{fmtN(qty)}</td>
+                    <td className="px-5 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(revenue)}</td>
+                    <td className="px-5 py-3.5 text-right text-sm font-bold text-green-600">{fmt(profit)}</td>
+                  </tr>))}</tbody></table>
               </div>
             </div>
           </div>
         )}
 
-        {/* ══ MOVEMENTS TAB ══ */}
-        {tab === 'movements' && (
+        {/* ══ MOVEMENTS ══ */}
+        {tab==='movements'&&(
           <>
             <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 fade-in">
               <div className="flex gap-4">
-                <div className="relative flex-1">
-                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
-                  <input value={movSearch} onChange={e => setMovSearch(e.target.value)}
-                    placeholder="상품명, SKU, 위치, 메모 검색..."
-                    className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                <div className="relative flex-1"><span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
+                  <input value={movSearch} onChange={e=>setMovSearch(e.target.value)} placeholder="상품명, SKU, 위치, 메모 검색..." className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
                 </div>
-                <select value={movFilter} onChange={e => setMovFilter(e.target.value)}
-                  className="border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                  <option value="전체">전체</option>
-                  {MOV_TYPES.map(t => <option key={t}>{t}</option>)}
+                <select value={movFilter} onChange={e=>setMovFilter(e.target.value)} className="border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  <option value="전체">전체</option>{MOV_TYPES.map(t=><option key={t}>{t}</option>)}<option value="취소">취소</option><option value="취소됨">취소된 항목</option>
                 </select>
+                <button onClick={exportMovements} className="border border-gray-200 text-gray-600 px-4 py-2.5 rounded-xl text-sm hover:bg-gray-50 whitespace-nowrap">⬇️ CSV</button>
               </div>
             </div>
-
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
               <div className="overflow-x-auto">
                 <table className="w-full">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
-                      {['일시','유형','상품','SKU','수량','판매가','매출','출발','도착','메모'].map(h => (
-                        <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
+                  <thead><tr className="bg-gray-50 border-b border-gray-100">{['일시','유형','상품','SKU','수량','판매가','매출','출발','도착','메모',''].map(h=><th key={h} className="px-4 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>)}</tr></thead>
                   <tbody className="divide-y divide-gray-50">
-                    {filteredMovements.length === 0 ? (
-                      <tr><td colSpan="10" className="text-center py-16 text-gray-400">
-                        <div className="text-4xl mb-3">📋</div>
-                        <p className="text-sm">이동 기록이 없습니다.</p>
-                        <button onClick={() => setMovModal({})} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">첫 기록 추가하기 →</button>
-                      </td></tr>
-                    ) : filteredMovements.map(m => {
-                      const item    = items.find(i => i.id === m.itemId);
-                      const fromLoc = locations.find(l => l.id === m.fromLocationId);
-                      const toLoc   = locations.find(l => l.id === m.toLocationId);
-                      const revenue = m.type === '판매' ? (m.sellPrice || 0) * m.quantity : null;
-                      return (
-                        <tr key={m.id} className="hover:bg-gray-50/50 transition-colors">
-                          <td className="px-5 py-4 text-xs text-gray-400 whitespace-nowrap">{formatDate(m.date)}</td>
-                          <td className="px-5 py-4"><span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${MOV_COLOR[m.type]}`}>{MOV_ICON[m.type]} {m.type}</span></td>
-                          <td className="px-5 py-4 text-sm text-gray-800 font-medium">{item?.name || '—'}</td>
-                          <td className="px-5 py-4">{item?.sku && <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-xs font-mono">{item.sku}</span>}</td>
-                          <td className="px-5 py-4 text-sm font-bold text-gray-700">{fmtN(m.quantity)}</td>
-                          <td className="px-5 py-4 text-sm text-gray-600">{m.sellPrice != null ? fmt(m.sellPrice) : '—'}</td>
-                          <td className="px-5 py-4 text-sm font-semibold text-green-600">{revenue != null ? fmt(revenue) : '—'}</td>
-                          <td className="px-5 py-4 text-sm text-gray-500">{fromLoc ? `${fromLoc.type === 'warehouse' ? '🏭' : '🏪'} ${fromLoc.name}` : '—'}</td>
-                          <td className="px-5 py-4 text-sm text-gray-500">{toLoc ? `${toLoc.type === 'warehouse' ? '🏭' : '🏪'} ${toLoc.name}` : '—'}</td>
-                          <td className="px-5 py-4 text-sm text-gray-400">{m.memo || '—'}</td>
+                    {filteredMovements.length===0?(
+                      <tr><td colSpan="11" className="text-center py-16 text-gray-400"><div className="text-4xl mb-3">📋</div><p className="text-sm">기록이 없습니다.</p><button onClick={()=>setMovModal({})} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">첫 기록 추가하기 →</button></td></tr>
+                    ):filteredMovements.map(m=>{
+                      const item=items.find(i=>i.id===m.itemId);
+                      const fl=locations.find(l=>l.id===m.fromLocationId);
+                      const tl=locations.find(l=>l.id===m.toLocationId);
+                      const rev=m.type==='판매'&&!m.cancelledBy?(m.sellPrice||0)*m.quantity:null;
+                      const cancelled=!!m.cancelledBy; const isCancel=m.type==='취소';
+                      return(
+                        <tr key={m.id} className={`transition-colors ${cancelled?'opacity-40 bg-gray-50':'hover:bg-gray-50/50'}`}>
+                          <td className="px-4 py-3.5 text-xs text-gray-400 whitespace-nowrap">{formatDate(m.date)}{cancelled&&<span className="ml-1 text-red-400 font-semibold">취소됨</span>}</td>
+                          <td className="px-4 py-3.5"><span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${MOV_COLOR[m.type]||'bg-gray-100 text-gray-500'} ${cancelled?'line-through':''}`}>{MOV_ICON[m.type]} {m.type}</span></td>
+                          <td className={`px-4 py-3.5 text-sm font-medium ${cancelled?'text-gray-400 line-through':'text-gray-800'}`}>{item?.name||'—'}</td>
+                          <td className="px-4 py-3.5">{item?.sku&&<span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-xs font-mono">{item.sku}</span>}</td>
+                          <td className="px-4 py-3.5 text-sm font-bold text-gray-700">{fmtN(m.quantity)}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600">{m.sellPrice!=null?fmt(Math.abs(m.sellPrice)):'—'}</td>
+                          <td className="px-4 py-3.5 text-sm font-semibold text-green-600">{rev!=null?fmt(rev):'—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-500">{fl?`${fl.type==='warehouse'?'🏭':'🏪'} ${fl.name}`:'—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-500">{tl?`${tl.type==='warehouse'?'🏭':'🏪'} ${tl.name}`:'—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-400">{m.memo||'—'}</td>
+                          <td className="px-4 py-3.5">{!cancelled&&!isCancel&&<button onClick={()=>setCancelConfirm(m)} className="text-xs text-red-400 hover:text-red-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-red-50 whitespace-nowrap">↩️ 취소</button>}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
-              <div className="px-5 py-3.5 border-t border-gray-100">
-                <p className="text-xs text-gray-400">총 {filteredMovements.length}건</p>
-              </div>
+              <div className="px-5 py-3.5 border-t border-gray-100"><p className="text-xs text-gray-400">총 {filteredMovements.length}건</p></div>
             </div>
           </>
         )}
+
+        {/* ══ ORDERS ══ */}
+        {tab==='orders'&&(
+          <div className="space-y-6 fade-in">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">발주 관리</h2>
+                <p className="text-sm text-gray-400">주문중 {orders.filter(o=>o.status==='주문중').length}건 · 입고완료 {orders.filter(o=>o.status==='입고완료').length}건</p>
+              </div>
+              <button onClick={()=>setOrderModal('add')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-sm">+ 발주 등록</button>
+            </div>
+            {orders.length===0?(
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 py-20 text-center text-gray-400">
+                <div className="text-4xl mb-3">🛒</div><p className="text-sm">등록된 발주가 없습니다.</p>
+                <button onClick={()=>setOrderModal('add')} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">첫 발주 등록하기 →</button>
+              </div>
+            ):(
+              <div className="space-y-3">
+                {['주문중','입고완료','취소'].map(status=>{
+                  const grp=orders.filter(o=>o.status===status);
+                  if(!grp.length)return null;
+                  return(
+                    <div key={status} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                      <div className="px-6 py-3.5 border-b border-gray-100 flex items-center gap-2">
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${ORD_STATUS_COLOR[status]}`}>{status}</span>
+                        <span className="text-sm text-gray-500">{grp.length}건</span>
+                      </div>
+                      <table className="w-full">
+                        <thead><tr className="bg-gray-50 border-b border-gray-50">{['발주일','상품','거래처','수량','단가','총액','예상입고','입고위치','메모',''].map(h=><th key={h} className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>)}</tr></thead>
+                        <tbody className="divide-y divide-gray-50">
+                          {grp.map(o=>{
+                            const item=items.find(i=>i.id===o.itemId);
+                            const supp=suppliers.find(s=>s.id===o.supplierId);
+                            const loc=locations.find(l=>l.id===o.toLocationId);
+                            return(
+                              <tr key={o.id} className="hover:bg-gray-50/50 transition-colors">
+                                <td className="px-5 py-3.5 text-xs text-gray-400 whitespace-nowrap">{formatDate(o.orderDate||o.createdAt)}</td>
+                                <td className="px-5 py-3.5"><p className="text-sm font-medium text-gray-800">{item?.name||'—'}</p>{item?.sku&&<span className="text-xs text-indigo-500 font-mono">{item.sku}</span>}</td>
+                                <td className="px-5 py-3.5 text-sm text-gray-600">{supp?.name||'—'}</td>
+                                <td className="px-5 py-3.5 text-sm font-semibold text-gray-800">{fmtN(o.quantity)}</td>
+                                <td className="px-5 py-3.5 text-sm text-gray-600">{fmt(o.unitCost)}</td>
+                                <td className="px-5 py-3.5 text-sm font-semibold text-indigo-600">{fmt(o.quantity*o.unitCost)}</td>
+                                <td className="px-5 py-3.5 text-xs text-gray-400">{o.expectedDate?formatDate(o.expectedDate):'—'}</td>
+                                <td className="px-5 py-3.5 text-sm text-gray-500">{loc?`${loc.type==='warehouse'?'🏭':'🏪'} ${loc.name}`:'—'}</td>
+                                <td className="px-5 py-3.5 text-sm text-gray-400">{o.memo||'—'}</td>
+                                <td className="px-5 py-3.5">
+                                  <div className="flex gap-1 whitespace-nowrap">
+                                    {status==='주문중'&&<>
+                                      <button onClick={()=>handleReceiveOrder(o)} className="text-xs text-green-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-green-50">📥 입고</button>
+                                      <button onClick={()=>setOrders(prev=>prev.map(x=>x.id===o.id?{...x,status:'취소'}:x))} className="text-xs text-red-400 font-medium px-2.5 py-1.5 rounded-lg hover:bg-red-50">취소</button>
+                                    </>}
+                                    <button onClick={()=>setOrderModal(o)} className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100">수정</button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ SUPPLIERS ══ */}
+        {tab==='suppliers'&&(
+          <div className="space-y-6 fade-in">
+            <div className="flex items-center justify-between">
+              <div><h2 className="text-lg font-bold text-gray-800">거래처 관리</h2><p className="text-sm text-gray-400">총 {suppliers.length}개 거래처</p></div>
+              <button onClick={()=>setSupplierModal('add')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-sm">+ 거래처 추가</button>
+            </div>
+            {suppliers.length===0?(
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 py-20 text-center text-gray-400">
+                <div className="text-4xl mb-3">🏢</div><p className="text-sm">등록된 거래처가 없습니다.</p>
+                <button onClick={()=>setSupplierModal('add')} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">거래처 추가하기 →</button>
+              </div>
+            ):(
+              <div className="grid md:grid-cols-2 gap-4">
+                {suppliers.map(s=>{
+                  const suppOrders=orders.filter(o=>o.supplierId===s.id);
+                  const totalOrdered=suppOrders.reduce((a,o)=>a+o.quantity*o.unitCost,0);
+                  const suppMovs=movements.filter(m=>m.memo?.includes(s.name)||items.find(i=>i.id===m.itemId)?.supplier===s.name);
+                  return(
+                    <div key={s.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-lg">🏢</div>
+                          <div><p className="font-semibold text-gray-800">{s.name}</p>{s.contact&&<p className="text-xs text-gray-400">{s.contact}</p>}</div>
+                        </div>
+                        <button onClick={()=>setSupplierModal(s)} className="text-xs text-gray-500 font-medium px-3 py-1.5 rounded-lg hover:bg-gray-100">수정</button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 text-center">
+                        <div className="bg-gray-50 rounded-xl py-2"><p className="text-xs text-gray-400">발주건수</p><p className="text-lg font-bold text-gray-700">{suppOrders.length}</p></div>
+                        <div className="bg-gray-50 rounded-xl py-2"><p className="text-xs text-gray-400">발주금액</p><p className="text-sm font-bold text-indigo-600">{fmt(totalOrdered)}</p></div>
+                        <div className="bg-gray-50 rounded-xl py-2"><p className="text-xs text-gray-400">주문중</p><p className="text-lg font-bold text-amber-600">{suppOrders.filter(o=>o.status==='주문중').length}</p></div>
+                      </div>
+                      {(s.phone||s.email||s.address)&&(
+                        <div className="space-y-1 text-xs text-gray-500">
+                          {s.phone&&<p>📞 {s.phone}</p>}
+                          {s.email&&<p>✉️ {s.email}</p>}
+                          {s.address&&<p>📍 {s.address}</p>}
+                        </div>
+                      )}
+                      {s.notes&&<p className="text-xs text-gray-400 bg-gray-50 rounded-xl px-3 py-2">{s.notes}</p>}
+                      <button onClick={()=>{setOrderModal('add');}} className="w-full border border-indigo-200 text-indigo-600 rounded-xl py-2 text-sm font-medium hover:bg-indigo-50 transition-colors">+ 발주 등록</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+        {/* ══ SETTINGS ══ */}
+        {tab==='settings'&&isAdmin&&(
+          <div className="space-y-6 fade-in">
+            <div className="flex items-center justify-between">
+              <div><h2 className="text-lg font-bold text-gray-800">사용자 관리</h2><p className="text-sm text-gray-400">총 {users.length}명의 계정</p></div>
+              <button onClick={()=>setUserModal('add')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-sm">+ 계정 추가</button>
+            </div>
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <table className="w-full">
+                <thead><tr className="bg-gray-50 border-b border-gray-100">
+                  {['이름','아이디','역할','생성일',''].map(h=><th key={h} className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>)}
+                </tr></thead>
+                <tbody className="divide-y divide-gray-50">
+                  {users.map(u=>(
+                    <tr key={u.id} className={`hover:bg-gray-50/50 transition-colors ${u.id===currentUser.id?'bg-indigo-50/30':''}`}>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-sm font-bold text-indigo-600">{u.name?.[0]||'?'}</div>
+                          <span className="text-sm font-medium text-gray-800">{u.name}{u.id===currentUser.id&&<span className="ml-2 text-xs text-indigo-500">(나)</span>}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600 font-mono">{u.username}</td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${u.role==='admin'?'bg-amber-100 text-amber-700':'bg-blue-100 text-blue-700'}`}>
+                          {u.role==='admin'?'👑 Admin':'👤 Staff'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-400">{u.createdAt?new Date(u.createdAt).toLocaleDateString('ko-KR'):'—'}</td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          <button onClick={()=>setUserModal(u)} className="text-xs text-indigo-600 font-medium px-3 py-1.5 rounded-lg hover:bg-indigo-50">수정</button>
+                          {u.id!==currentUser.id&&<button onClick={()=>handleDeleteUser(u.id)} className="text-xs text-red-400 font-medium px-3 py-1.5 rounded-lg hover:bg-red-50">삭제</button>}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4">
+              <p className="text-sm font-semibold text-amber-800 mb-1">⚠️ 보안 안내</p>
+              <p className="text-xs text-amber-700">이 앱은 브라우저 기반 인증으로, 소규모 팀 접근 제어 용도입니다. 비밀번호는 SHA-256으로 해시되어 저장됩니다.</p>
+            </div>
+          </div>
+        )}
       </main>
 
-      {itemModal && <ItemModal item={itemModal === 'add' ? null : itemModal} onClose={() => setItemModal(null)} onSave={handleSaveItem} />}
-      {locModal  && <LocationModal onClose={() => setLocModal(false)} onSave={handleSaveLocation} />}
-      {movModal  && <MovementModal items={items} locations={locations} stock={stock} defaultItemId={movModal.itemId} defaultLocId={movModal.locId} onClose={() => setMovModal(null)} onSubmit={handleMovement} />}
+      {/* Modals */}
+      {userModal&&<UserModal editUser={userModal==='add'?null:userModal} onClose={()=>setUserModal(null)} onSave={handleSaveUser}/>}
+      {itemModal&&<ItemModal item={itemModal==='add'?null:itemModal} suppliers={suppliers} images={images} onClose={()=>{setItemModal(null);setPendingImg(null);}} onSave={handleSaveItem} onImage={handleImage}/>}
+      {locModal&&<LocationModal onClose={()=>setLocModal(false)} onSave={handleSaveLocation}/>}
+      {movModal&&<MovementModal items={items} locations={locations} stock={stock} suppliers={suppliers} defaultItemId={movModal.itemId} defaultLocId={movModal.locId} onClose={()=>setMovModal(null)} onSubmit={handleMovement}/>}
+      {supplierModal&&<SupplierModal supplier={supplierModal==='add'?null:supplierModal} onClose={()=>setSupplierModal(null)} onSave={handleSaveSupplier}/>}
+      {orderModal&&<OrderModal order={orderModal==='add'?null:orderModal} items={items} suppliers={suppliers} locations={locations} onClose={()=>setOrderModal(null)} onSave={handleSaveOrder}/>}
 
-      {toast && (
-        <div className="fixed bottom-6 right-6 px-5 py-3.5 rounded-2xl shadow-xl text-sm font-medium text-white bg-gray-800 slide-in z-50">
-          ✅ {toast}
+      {cancelConfirm&&(
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm slide-in p-6 space-y-4">
+            <div className="flex items-center gap-3"><div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center text-xl">↩️</div><h2 className="text-lg font-bold text-gray-800">기록 취소</h2></div>
+            <div className="bg-gray-50 rounded-xl p-4 space-y-1 text-sm">
+              <p className="text-gray-500">다음 기록을 취소하시겠어요?</p>
+              <p className="font-semibold text-gray-800">{items.find(i=>i.id===cancelConfirm.itemId)?.name}</p>
+              <p className="text-gray-500">{MOV_ICON[cancelConfirm.type]} {cancelConfirm.type} · {fmtN(cancelConfirm.quantity)}개 · {formatDate(cancelConfirm.date)}</p>
+            </div>
+            <p className="text-xs text-gray-400">재고가 원복되고 원본 기록은 "취소됨"으로 표시됩니다.</p>
+            <div className="flex gap-3">
+              <button onClick={()=>setCancelConfirm(null)} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">아니요</button>
+              <button onClick={()=>handleCancel(cancelConfirm)} className="flex-1 bg-red-500 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-red-600">네, 취소할게요</button>
+            </div>
+          </div>
         </div>
       )}
+
+      {toast&&<div className="fixed bottom-6 right-6 px-5 py-3.5 rounded-2xl shadow-xl text-sm font-medium text-white bg-gray-800 slide-in z-50">✅ {toast}</div>}
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+/* ── Root with Auth ── */
+function Root() {
+  const [authState, setAuthState] = useState('loading');
+  const [currentUser, setCurrentUser] = useState(null);
+
+  useEffect(() => {
+    const users = load('sf-users', []);
+    if (users.length === 0) { setAuthState('setup'); return; }
+    const sess = getSession();
+    if (sess) {
+      const user = users.find(u => u.id === sess.userId);
+      if (user) { setCurrentUser(user); setAuthState('app'); return; }
+    }
+    setAuthState('login');
+  }, []);
+
+  if (authState === 'loading') return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center"><div className="text-4xl mb-4">📦</div><p className="text-gray-400 text-sm">로딩 중...</p></div>
+    </div>
+  );
+  if (authState === 'setup') return <SetupScreen onDone={u=>{ setCurrentUser(u); setAuthState('app'); }} />;
+  if (authState === 'login') return <LoginScreen onLogin={u=>{ setCurrentUser(u); setAuthState('app'); }} />;
+  return <App currentUser={currentUser} onLogout={()=>{ clearSession(); setCurrentUser(null); setAuthState('login'); }} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root/>);
 </script>
 </body>
 </html>
