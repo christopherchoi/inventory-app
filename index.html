@@ -8,6 +8,7 @@
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     body { font-family: 'Inter', sans-serif; }
@@ -20,34 +21,36 @@
 <body class="bg-gray-50 min-h-screen">
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useMemo, useEffect } = React;
+const { useState, useMemo, useEffect, useRef } = React;
 
 const INITIAL_LOCATIONS = [
   { id: 1, name: 'Main Warehouse', type: 'warehouse' },
   { id: 2, name: 'Honey Barn North Van', type: 'store' },
 ];
-
 const INITIAL_ITEMS = [
-  { id: 1, name: 'MANUKA HONEY STICK 10 MGO 100+', sku: 'MGO-100', category: '식품', supplier: 'Bada International' },
-  { id: 2, name: 'MANUKA HONEY STICK 10 MGO 300+', sku: 'MGO-300', category: '식품', supplier: 'Bada International' },
+  { id: 1, name: 'MANUKA HONEY STICK 10 MGO 100+', sku: 'MGO-100', category: '식품', supplier: 'Bada International', costPrice: 0, sellPrice: 0 },
+  { id: 2, name: 'MANUKA HONEY STICK 10 MGO 300+', sku: 'MGO-300', category: '식품', supplier: 'Bada International', costPrice: 0, sellPrice: 0 },
 ];
-
 const INITIAL_STOCK = { 1: { 1: 2700, 2: 0 }, 2: { 1: 2700, 2: 0 } };
 
 const MOV_TYPES = ['입고', '이동', '판매', '출고'];
-const MOV_DESC  = { '입고': '외부 → 창고/스토어로 들어옴', '이동': '창고 ↔ 스토어 간 이동', '판매': '스토어에서 판매됨', '출고': '외부로 나감 (폐기 등)' };
+const MOV_DESC  = { '입고': '외부 → 창고/스토어', '이동': '창고 ↔ 스토어 간 이동', '판매': '스토어에서 판매됨', '출고': '외부로 나감' };
 const MOV_COLOR = { '입고': 'bg-green-100 text-green-700', '이동': 'bg-blue-100 text-blue-700', '판매': 'bg-purple-100 text-purple-700', '출고': 'bg-red-100 text-red-700' };
 const MOV_ICON  = { '입고': '📥', '이동': '🔄', '판매': '🛒', '출고': '📤' };
+
+const fmt  = n => `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtN = n => Number(n || 0).toLocaleString();
 
 function load(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
 }
 
+/* ── Shared Modal Shell ── */
 function Modal({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md slide-in">
-        <div className="flex items-center justify-between p-6 border-b border-gray-100">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md slide-in max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-6 border-b border-gray-100 sticky top-0 bg-white rounded-t-2xl">
           <h2 className="text-lg font-bold text-gray-800">{title}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100">✕</button>
         </div>
@@ -57,29 +60,49 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+/* ── Item Modal ── */
 function ItemModal({ item, onClose, onSave }) {
-  const [form, setForm] = useState(item || { name: '', sku: '', category: '식품', supplier: '' });
+  const [form, setForm] = useState(item || { name: '', sku: '', supplier: '', costPrice: '', sellPrice: '' });
   const F = (k, v) => setForm(p => ({...p, [k]: v}));
   return (
     <Modal title={item ? '상품 수정' : '신규 상품 추가'} onClose={onClose}>
-      <form onSubmit={e => { e.preventDefault(); if (form.name.trim()) onSave(form); }} className="p-6 space-y-4">
+      <form onSubmit={e => { e.preventDefault(); if (form.name.trim()) onSave({ ...form, costPrice: Number(form.costPrice) || 0, sellPrice: Number(form.sellPrice) || 0 }); }} className="p-6 space-y-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">상품명 *</label>
           <input value={form.name} onChange={e => F('name', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="상품명 입력" required />
+            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="상품명 입력" required />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">SKU</label>
-          <input value={form.sku} onChange={e => F('sku', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="예: MGO-100" />
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">SKU</label>
+            <input value={form.sku} onChange={e => F('sku', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: MGO-100" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">공급업체</label>
+            <input value={form.supplier} onChange={e => F('supplier', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="공급업체명" />
+          </div>
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">공급업체</label>
-          <input value={form.supplier} onChange={e => F('supplier', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="공급업체명" />
+        <div className="bg-indigo-50 rounded-xl p-4 space-y-3">
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">가격 설정</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">입고가 (원가) $</label>
+              <input type="number" min="0" step="0.01" value={form.costPrice} onChange={e => F('costPrice', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0.00" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">판매가 $</label>
+              <input type="number" min="0" step="0.01" value={form.sellPrice} onChange={e => F('sellPrice', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="0.00" />
+            </div>
+          </div>
+          {(Number(form.costPrice) > 0 && Number(form.sellPrice) > 0) && (
+            <p className="text-xs text-indigo-600">
+              마진: {fmt(Number(form.sellPrice) - Number(form.costPrice))} ({Math.round(((Number(form.sellPrice) - Number(form.costPrice)) / Number(form.sellPrice)) * 100)}%)
+            </p>
+          )}
         </div>
         <div className="flex gap-3 pt-2">
           <button type="button" onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50">취소</button>
@@ -90,6 +113,7 @@ function ItemModal({ item, onClose, onSave }) {
   );
 }
 
+/* ── Location Modal ── */
 function LocationModal({ onClose, onSave }) {
   const [form, setForm] = useState({ name: '', type: 'store' });
   return (
@@ -98,8 +122,7 @@ function LocationModal({ onClose, onSave }) {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">위치명 *</label>
           <input value={form.name} onChange={e => setForm({...form, name: e.target.value})}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="예: Honey Barn North Van" required />
+            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="예: Honey Barn North Van" required />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">유형</label>
@@ -121,22 +144,23 @@ function LocationModal({ onClose, onSave }) {
   );
 }
 
+/* ── Movement Modal ── */
 function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, onClose, onSubmit }) {
-  const [form, setForm] = useState({
-    itemId: defaultItemId || items[0]?.id || '',
-    type: defaultLocId ? '판매' : '판매',
-    fromLocationId: defaultLocId || '',
-    toLocationId: '',
-    quantity: '',
-    memo: ''
-  });
+  const [form, setForm] = useState({ itemId: defaultItemId || items[0]?.id || '', type: '판매', fromLocationId: defaultLocId || '', toLocationId: '', quantity: '', sellPrice: '', memo: '' });
   const [error, setError] = useState('');
   const F = (k, v) => { setForm(p => ({...p, [k]: v})); setError(''); };
 
-  const needsFrom = ['이동', '판매', '출고'].includes(form.type);
-  const needsTo   = ['입고', '이동'].includes(form.type);
-  const currentStock = form.itemId && form.fromLocationId
-    ? (stock[form.itemId]?.[form.fromLocationId] || 0) : null;
+  const needsFrom = ['이동','판매','출고'].includes(form.type);
+  const needsTo   = ['입고','이동'].includes(form.type);
+  const isSale    = form.type === '판매';
+  const selectedItem = items.find(i => i.id === Number(form.itemId));
+  const currentStock = form.itemId && form.fromLocationId ? (stock[form.itemId]?.[form.fromLocationId] || 0) : null;
+
+  useEffect(() => {
+    if (selectedItem && isSale && !form.sellPrice) {
+      setForm(p => ({...p, sellPrice: selectedItem.sellPrice || ''}));
+    }
+  }, [form.itemId, form.type]);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -144,10 +168,16 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
     if (!qty || qty <= 0) { setError('수량을 올바르게 입력하세요.'); return; }
     if (needsFrom && !form.fromLocationId) { setError('출발 위치를 선택하세요.'); return; }
     if (needsTo   && !form.toLocationId)   { setError('도착 위치를 선택하세요.'); return; }
-    if (needsFrom && currentStock !== null && qty > currentStock) {
-      setError(`재고 부족. 현재 재고: ${currentStock}개`); return;
-    }
-    onSubmit({ ...form, itemId: Number(form.itemId), fromLocationId: form.fromLocationId ? Number(form.fromLocationId) : null, toLocationId: form.toLocationId ? Number(form.toLocationId) : null, quantity: qty });
+    if (needsFrom && currentStock !== null && qty > currentStock) { setError(`재고 부족. 현재 재고: ${currentStock}개`); return; }
+    onSubmit({
+      ...form,
+      itemId:         Number(form.itemId),
+      fromLocationId: form.fromLocationId ? Number(form.fromLocationId) : null,
+      toLocationId:   form.toLocationId   ? Number(form.toLocationId)   : null,
+      quantity:       qty,
+      sellPrice:      isSale ? (Number(form.sellPrice) || 0) : null,
+      costPrice:      isSale ? (selectedItem?.costPrice || 0) : null,
+    });
   }
 
   return (
@@ -180,9 +210,7 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
               <option value="">위치 선택</option>
               {locations.map(l => <option key={l.id} value={l.id}>{l.type === 'warehouse' ? '🏭' : '🏪'} {l.name}</option>)}
             </select>
-            {currentStock !== null && (
-              <p className="text-xs text-gray-400 mt-1">현재 재고: <span className="font-semibold text-gray-600">{currentStock.toLocaleString()}개</span></p>
-            )}
+            {currentStock !== null && <p className="text-xs text-gray-400 mt-1">현재 재고: <span className="font-semibold text-gray-600">{currentStock.toLocaleString()}개</span></p>}
           </div>
         )}
         {needsTo && (
@@ -197,17 +225,44 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
             </select>
           </div>
         )}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">수량</label>
-          <input type="number" min="1" value={form.quantity} onChange={e => F('quantity', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="수량 입력" required />
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">수량</label>
+            <input type="number" min="1" value={form.quantity} onChange={e => F('quantity', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="수량 입력" required />
+          </div>
+          {isSale && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">판매가 $ <span className="text-gray-400 font-normal">(개당)</span></label>
+              <input type="number" min="0" step="0.01" value={form.sellPrice} onChange={e => F('sellPrice', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="0.00" />
+            </div>
+          )}
         </div>
+        {isSale && form.quantity && form.sellPrice && (
+          <div className="bg-green-50 rounded-xl px-4 py-3 text-sm">
+            <div className="flex justify-between text-gray-600">
+              <span>매출</span>
+              <span className="font-semibold">{fmt(Number(form.quantity) * Number(form.sellPrice))}</span>
+            </div>
+            {selectedItem?.costPrice > 0 && (
+              <>
+                <div className="flex justify-between text-gray-600 mt-1">
+                  <span>원가</span>
+                  <span className="font-semibold text-red-500">-{fmt(Number(form.quantity) * selectedItem.costPrice)}</span>
+                </div>
+                <div className="flex justify-between font-bold text-green-700 mt-1 pt-1 border-t border-green-200">
+                  <span>순수익</span>
+                  <span>{fmt(Number(form.quantity) * (Number(form.sellPrice) - selectedItem.costPrice))}</span>
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">메모 (선택)</label>
           <input value={form.memo} onChange={e => F('memo', e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="추가 메모" />
+            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="추가 메모" />
         </div>
         {error && <p className="text-sm text-red-500 bg-red-50 rounded-xl px-4 py-2.5">{error}</p>}
         <div className="flex gap-3 pt-2">
@@ -219,19 +274,52 @@ function MovementModal({ items, locations, stock, defaultItemId, defaultLocId, o
   );
 }
 
+/* ── Bar Chart ── */
+function MonthlyChart({ data }) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(() => {
+    if (!ref.current || !data.length) return;
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type: 'bar',
+      data: {
+        labels: data.map(d => d.month),
+        datasets: [
+          { label: '매출', data: data.map(d => d.revenue), backgroundColor: 'rgba(99,102,241,0.8)', borderRadius: 6 },
+          { label: '원가', data: data.map(d => d.cost), backgroundColor: 'rgba(239,68,68,0.6)', borderRadius: 6 },
+          { label: '순수익', data: data.map(d => d.profit), backgroundColor: 'rgba(34,197,94,0.8)', borderRadius: 6 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top', labels: { font: { size: 12, family: 'Inter' }, padding: 16 } } },
+        scales: {
+          y: { ticks: { callback: v => `$${v.toLocaleString()}`, font: { size: 11 } }, grid: { color: 'rgba(0,0,0,0.05)' } },
+          x: { ticks: { font: { size: 11 } }, grid: { display: false } }
+        }
+      }
+    });
+    return () => { if (chartRef.current) chartRef.current.destroy(); };
+  }, [data]);
+  return <canvas ref={ref} />;
+}
+
+/* ── Main App ── */
 function App() {
-  const [locations, setLocations]   = useState(() => load('sf-locations', INITIAL_LOCATIONS));
-  const [items, setItems]           = useState(() => load('sf-items', INITIAL_ITEMS));
-  const [stock, setStock]           = useState(() => load('sf-stock', INITIAL_STOCK));
-  const [movements, setMovements]   = useState(() => load('sf-movements', []));
-  const [tab, setTab]               = useState('inventory');
-  const [itemModal, setItemModal]   = useState(null);
-  const [locModal, setLocModal]     = useState(false);
-  const [movModal, setMovModal]     = useState(null); // null | { itemId, locId }
-  const [toast, setToast]           = useState(null);
-  const [movSearch, setMovSearch]   = useState('');
-  const [movFilter, setMovFilter]   = useState('전체');
-  const [locFilter, setLocFilter]   = useState('전체');
+  const [locations, setLocations] = useState(() => load('sf-locations', INITIAL_LOCATIONS));
+  const [items, setItems]         = useState(() => load('sf-items', INITIAL_ITEMS));
+  const [stock, setStock]         = useState(() => load('sf-stock', INITIAL_STOCK));
+  const [movements, setMovements] = useState(() => load('sf-movements', []));
+  const [tab, setTab]             = useState('inventory');
+  const [itemModal, setItemModal] = useState(null);
+  const [locModal, setLocModal]   = useState(false);
+  const [movModal, setMovModal]   = useState(null);
+  const [toast, setToast]         = useState(null);
+  const [movSearch, setMovSearch] = useState('');
+  const [movFilter, setMovFilter] = useState('전체');
+  const [locFilter, setLocFilter] = useState('전체');
+  const [revenueYear, setRevenueYear] = useState(new Date().getFullYear());
   const [nextItemId, setNextItemId] = useState(() => Math.max(...load('sf-items', INITIAL_ITEMS).map(i => i.id), 0) + 1);
   const [nextLocId, setNextLocId]   = useState(() => Math.max(...load('sf-locations', INITIAL_LOCATIONS).map(l => l.id), 0) + 1);
 
@@ -241,17 +329,52 @@ function App() {
   useEffect(() => { localStorage.setItem('sf-movements', JSON.stringify(movements)); }, [movements]);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2800); }
-
   function getStock(itemId, locId) { return stock[itemId]?.[locId] || 0; }
-
-  // Sold quantity per item per location
   function getSold(itemId, locId) {
-    return movements
-      .filter(m => m.type === '판매' && m.itemId === itemId && m.fromLocationId === locId)
-      .reduce((s, m) => s + m.quantity, 0);
+    return movements.filter(m => m.type === '판매' && m.itemId === itemId && m.fromLocationId === locId).reduce((s, m) => s + m.quantity, 0);
   }
 
-  // Rows: one per (item × location)
+  /* Revenue calculations */
+  const sales = useMemo(() => movements.filter(m => m.type === '판매'), [movements]);
+
+  const revenueStats = useMemo(() => {
+    const totalRevenue = sales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
+    const totalCost    = sales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
+    const totalProfit  = totalRevenue - totalCost;
+    const margin       = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
+    return { totalRevenue, totalCost, totalProfit, margin };
+  }, [sales]);
+
+  const monthlyData = useMemo(() => {
+    const months = Array.from({ length: 12 }, (_, i) => {
+      const monthSales = sales.filter(m => {
+        const d = new Date(m.date);
+        return d.getFullYear() === revenueYear && d.getMonth() === i;
+      });
+      const revenue = monthSales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
+      const cost    = monthSales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
+      return { month: `${i + 1}월`, revenue, cost, profit: revenue - cost, qty: monthSales.reduce((s, m) => s + m.quantity, 0) };
+    });
+    return months;
+  }, [sales, revenueYear]);
+
+  const activeMonths = useMemo(() => monthlyData.filter(m => m.revenue > 0 || m.qty > 0), [monthlyData]);
+
+  const locationRevenue = useMemo(() => locations.map(loc => {
+    const locSales = sales.filter(m => m.fromLocationId === loc.id);
+    const revenue  = locSales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
+    const cost     = locSales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
+    return { loc, revenue, cost, profit: revenue - cost, qty: locSales.reduce((s, m) => s + m.quantity, 0) };
+  }), [sales, locations]);
+
+  const skuRevenue = useMemo(() => items.map(item => {
+    const itemSales = sales.filter(m => m.itemId === item.id);
+    const revenue   = itemSales.reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
+    const cost      = itemSales.reduce((s, m) => s + (m.costPrice || 0) * m.quantity, 0);
+    return { item, revenue, cost, profit: revenue - cost, qty: itemSales.reduce((s, m) => s + m.quantity, 0) };
+  }), [sales, items]);
+
+  /* Inventory rows */
   const rows = useMemo(() => {
     const result = [];
     items.forEach(item => {
@@ -263,18 +386,11 @@ function App() {
     return result;
   }, [items, locations, stock, movements, locFilter]);
 
-  // Stats
-  const stats = useMemo(() => {
-    const totalSKUs = items.length;
+  const globalStats = useMemo(() => {
     const totalQty  = items.reduce((s, i) => s + locations.reduce((a, l) => a + getStock(i.id, l.id), 0), 0);
-    const totalSold = movements.filter(m => m.type === '판매').reduce((s, m) => s + m.quantity, 0);
-    const locStats  = locations.map(loc => ({
-      loc,
-      qty:  items.reduce((s, i) => s + getStock(i.id, loc.id), 0),
-      sold: movements.filter(m => m.type === '판매' && m.fromLocationId === loc.id).reduce((s, m) => s + m.quantity, 0),
-    }));
-    return { totalSKUs, totalQty, totalSold, locStats };
-  }, [items, locations, stock, movements]);
+    const totalSold = sales.reduce((s, m) => s + m.quantity, 0);
+    return { totalQty, totalSold };
+  }, [items, locations, stock, sales]);
 
   function handleSaveItem(form) {
     if (itemModal === 'add') {
@@ -294,7 +410,7 @@ function App() {
     const id = nextLocId;
     setLocations(prev => [...prev, { ...form, id }]);
     setNextLocId(n => n + 1);
-    showToast(`${form.name} 위치가 추가됐습니다!`);
+    showToast(`${form.name} 추가됐습니다!`);
     setLocModal(false);
   }
 
@@ -312,11 +428,6 @@ function App() {
     setMovModal(null);
   }
 
-  function formatDate(iso) {
-    const d = new Date(iso);
-    return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-  }
-
   const filteredMovements = useMemo(() => movements.filter(m => {
     const item    = items.find(i => i.id === m.itemId);
     const fromLoc = locations.find(l => l.id === m.fromLocationId);
@@ -325,10 +436,17 @@ function App() {
     return str.includes(movSearch.toLowerCase()) && (movFilter === '전체' || m.type === movFilter);
   }), [movements, items, locations, movSearch, movFilter]);
 
+  function formatDate(iso) {
+    const d = new Date(iso);
+    return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+
   function StockBadge({ qty }) {
     if (qty === 0) return <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">품절</span>;
     return <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">정상</span>;
   }
+
+  const TABS = [['inventory','📦 재고 현황'],['revenue','💰 수익 현황'],['movements','📋 이동 이력']];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -339,26 +457,17 @@ function App() {
             <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-lg">📦</div>
             <div>
               <h1 className="text-lg font-bold text-gray-900">StockFlow</h1>
-              <p className="text-xs text-gray-400">멀티 위치 재고 관리</p>
+              <p className="text-xs text-gray-400">멀티 위치 재고·수익 관리</p>
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setLocModal(true)}
-              className="border border-gray-200 text-gray-600 px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors">
-              🏪 위치 추가
-            </button>
-            <button onClick={() => setMovModal({})}
-              className="border border-indigo-200 text-indigo-600 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-50 transition-colors">
-              🔄 입출고
-            </button>
-            <button onClick={() => setItemModal('add')}
-              className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors shadow-sm">
-              + 상품 추가
-            </button>
+            <button onClick={() => setLocModal(true)} className="border border-gray-200 text-gray-600 px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-50">🏪 위치 추가</button>
+            <button onClick={() => setMovModal({})} className="border border-indigo-200 text-indigo-600 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-50">🔄 입출고</button>
+            <button onClick={() => setItemModal('add')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-sm">+ 상품 추가</button>
           </div>
         </div>
         <div className="max-w-7xl mx-auto px-6 flex gap-1">
-          {[['inventory','📦 재고 현황'],['movements','📋 이동 이력']].map(([key, label]) => (
+          {TABS.map(([key, label]) => (
             <button key={key} onClick={() => setTab(key)}
               className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === key ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
               {label}
@@ -369,142 +478,276 @@ function App() {
 
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
 
-        {/* ── Stats ── */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <p className="text-sm text-gray-500 font-medium">전체 SKU</p>
-            <p className="text-3xl font-bold text-gray-800 mt-1">{stats.totalSKUs}</p>
-            <p className="text-xs text-gray-400 mt-1">등록된 상품 종류</p>
-          </div>
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <p className="text-sm text-gray-500 font-medium">전체 재고</p>
-            <p className="text-3xl font-bold text-indigo-600 mt-1">{stats.totalQty.toLocaleString()}</p>
-            <p className="text-xs text-gray-400 mt-1">모든 위치 합산</p>
-          </div>
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-            <p className="text-sm text-gray-500 font-medium">누적 판매</p>
-            <p className="text-3xl font-bold text-green-600 mt-1">{stats.totalSold.toLocaleString()}</p>
-            <p className="text-xs text-gray-400 mt-1">전체 판매 수량</p>
-          </div>
-          <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-2">
-            <p className="text-sm text-gray-500 font-medium">위치별 판매</p>
-            {stats.locStats.filter(ls => ls.loc.type === 'store').map(ls => (
-              <div key={ls.loc.id} className="flex items-center justify-between">
-                <span className="text-xs text-gray-500 truncate max-w-[120px]">🏪 {ls.loc.name}</span>
-                <span className="text-sm font-bold text-purple-600">{ls.sold.toLocaleString()}개</span>
-              </div>
-            ))}
-            {stats.locStats.filter(ls => ls.loc.type === 'store').length === 0 && (
-              <p className="text-xs text-gray-400">스토어 없음</p>
-            )}
-          </div>
-        </div>
-
-        {/* ── Location summary chips ── */}
-        <div className="flex flex-wrap gap-3 fade-in">
-          {stats.locStats.map(ls => (
-            <div key={ls.loc.id} className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-100 flex items-center gap-3">
-              <span className="text-lg">{ls.loc.type === 'warehouse' ? '🏭' : '🏪'}</span>
-              <div>
-                <p className="text-sm font-semibold text-gray-800">{ls.loc.name}</p>
-                <p className="text-xs text-gray-400">재고 <span className="font-semibold text-indigo-600">{ls.qty.toLocaleString()}</span> · 판매 <span className="font-semibold text-purple-600">{ls.sold.toLocaleString()}</span></p>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* ── Inventory Tab ── */}
+        {/* ══ INVENTORY TAB ══ */}
         {tab === 'inventory' && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
-            {/* Filter bar */}
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4">
-              <h2 className="font-semibold text-gray-800 whitespace-nowrap">SKU × Location 재고</h2>
-              <select value={locFilter} onChange={e => setLocFilter(e.target.value)}
-                className="border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="전체">전체 위치</option>
-                {locations.map(l => <option key={l.id} value={l.id}>{l.type === 'warehouse' ? '🏭' : '🏪'} {l.name}</option>)}
-              </select>
+          <>
+            {/* Quick stats */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                <p className="text-sm text-gray-500">전체 SKU</p>
+                <p className="text-3xl font-bold text-gray-800 mt-1">{items.length}</p>
+                <p className="text-xs text-gray-400 mt-1">등록된 상품 종류</p>
+              </div>
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                <p className="text-sm text-gray-500">전체 재고</p>
+                <p className="text-3xl font-bold text-indigo-600 mt-1">{fmtN(globalStats.totalQty)}</p>
+                <p className="text-xs text-gray-400 mt-1">모든 위치 합산</p>
+              </div>
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                <p className="text-sm text-gray-500">누적 판매</p>
+                <p className="text-3xl font-bold text-purple-600 mt-1">{fmtN(globalStats.totalSold)}</p>
+                <p className="text-xs text-gray-400 mt-1">전체 판매 수량</p>
+              </div>
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                <p className="text-sm text-gray-500">누적 매출</p>
+                <p className="text-2xl font-bold text-green-600 mt-1">{fmt(revenueStats.totalRevenue)}</p>
+                <p className="text-xs text-gray-400 mt-1">순수익 {fmt(revenueStats.totalProfit)}</p>
+              </div>
             </div>
-            <div className="overflow-x-auto">
+
+            {/* Location chips */}
+            <div className="flex flex-wrap gap-3 fade-in">
+              {locations.map(loc => {
+                const qty  = items.reduce((s, i) => s + getStock(i.id, loc.id), 0);
+                const sold = sales.filter(m => m.fromLocationId === loc.id).reduce((s, m) => s + m.quantity, 0);
+                const rev  = sales.filter(m => m.fromLocationId === loc.id).reduce((s, m) => s + (m.sellPrice || 0) * m.quantity, 0);
+                return (
+                  <div key={loc.id} className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-100 flex items-center gap-3">
+                    <span className="text-xl">{loc.type === 'warehouse' ? '🏭' : '🏪'}</span>
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">{loc.name}</p>
+                      <p className="text-xs text-gray-400">
+                        재고 <span className="font-semibold text-indigo-600">{fmtN(qty)}</span>
+                        {' · '}판매 <span className="font-semibold text-purple-600">{fmtN(sold)}</span>
+                        {rev > 0 && <> · 매출 <span className="font-semibold text-green-600">{fmt(rev)}</span></>}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Inventory Table */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+                <h2 className="font-semibold text-gray-800">SKU × Location 재고</h2>
+                <select value={locFilter} onChange={e => setLocFilter(e.target.value)}
+                  className="border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  <option value="전체">전체 위치</option>
+                  {locations.map(l => <option key={l.id} value={l.id}>{l.type === 'warehouse' ? '🏭' : '🏪'} {l.name}</option>)}
+                </select>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['상품명','SKU','Location','공급업체','재고수량','판매수량','입고가','판매가','상태','관리'].map(h => (
+                        <th key={h} className={`px-5 py-3.5 text-xs font-semibold text-gray-500 uppercase tracking-wide ${['재고수량','판매수량','입고가','판매가'].includes(h) ? 'text-right' : 'text-left'}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((item, itemIdx) => {
+                      const itemRows = rows.filter(r => r.item.id === item.id);
+                      if (!itemRows.length) return null;
+                      return itemRows.map((row, rowIdx) => (
+                        <tr key={`${item.id}-${row.loc.id}`}
+                          className={`hover:bg-gray-50/50 transition-colors ${rowIdx < itemRows.length - 1 ? 'border-b border-gray-50' : itemIdx < items.length - 1 ? 'border-b-2 border-gray-100' : ''}`}>
+                          <td className="px-5 py-3.5">
+                            {rowIdx === 0
+                              ? <span className="text-sm font-semibold text-gray-800">{item.name}</span>
+                              : <span className="text-gray-300 text-sm pl-2">↳</span>}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            {rowIdx === 0 && item.sku && <span className="px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-mono font-semibold">{item.sku}</span>}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${row.loc.type === 'warehouse' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                              {row.loc.type === 'warehouse' ? '🏭' : '🏪'} {row.loc.name}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-sm text-gray-500">{rowIdx === 0 ? (item.supplier || '—') : ''}</td>
+                          <td className="px-5 py-3.5 text-right"><span className={`text-sm font-bold ${row.qty === 0 ? 'text-red-400' : 'text-gray-800'}`}>{fmtN(row.qty)}</span></td>
+                          <td className="px-5 py-3.5 text-right"><span className={`text-sm font-semibold ${row.sold > 0 ? 'text-purple-600' : 'text-gray-300'}`}>{fmtN(row.sold)}</span></td>
+                          <td className="px-5 py-3.5 text-right text-sm text-gray-500">{rowIdx === 0 && item.costPrice > 0 ? fmt(item.costPrice) : rowIdx === 0 ? '—' : ''}</td>
+                          <td className="px-5 py-3.5 text-right text-sm text-gray-700 font-medium">{rowIdx === 0 && item.sellPrice > 0 ? fmt(item.sellPrice) : rowIdx === 0 ? '—' : ''}</td>
+                          <td className="px-5 py-3.5"><StockBadge qty={row.qty} /></td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex gap-1">
+                              <button onClick={() => setMovModal({ itemId: item.id, locId: row.loc.id })}
+                                className="text-xs text-indigo-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 whitespace-nowrap">🔄 입출고</button>
+                              {rowIdx === 0 && (
+                                <button onClick={() => setItemModal(item)}
+                                  className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100">수정</button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ));
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="px-6 py-3.5 border-t border-gray-100 flex items-center justify-between">
+                <p className="text-xs text-gray-400">{items.length}개 SKU × {locations.length}개 위치</p>
+                <p className="text-xs text-gray-400">전체 재고 {fmtN(globalStats.totalQty)}개 · 누적 판매 {fmtN(globalStats.totalSold)}개</p>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ══ REVENUE TAB ══ */}
+        {tab === 'revenue' && (
+          <div className="space-y-6 fade-in">
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[
+                { label: '총 매출', value: fmt(revenueStats.totalRevenue), sub: '판매 합계', color: 'text-indigo-600', bg: 'bg-indigo-50', icon: '💵' },
+                { label: '총 원가', value: fmt(revenueStats.totalCost), sub: '입고가 합계', color: 'text-red-500', bg: 'bg-red-50', icon: '📦' },
+                { label: '순수익', value: fmt(revenueStats.totalProfit), sub: '매출 - 원가', color: 'text-green-600', bg: 'bg-green-50', icon: '💰' },
+                { label: '마진율', value: `${revenueStats.margin.toFixed(1)}%`, sub: '순수익 / 매출', color: 'text-purple-600', bg: 'bg-purple-50', icon: '📊' },
+              ].map(s => (
+                <div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`w-8 h-8 rounded-lg ${s.bg} flex items-center justify-center text-base`}>{s.icon}</span>
+                    <p className="text-sm text-gray-500 font-medium">{s.label}</p>
+                  </div>
+                  <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+                  <p className="text-xs text-gray-400 mt-1">{s.sub}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Monthly chart */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="font-semibold text-gray-800">월별 수익 현황</h2>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setRevenueYear(y => y - 1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">‹</button>
+                  <span className="text-sm font-semibold text-gray-700 w-12 text-center">{revenueYear}</span>
+                  <button onClick={() => setRevenueYear(y => y + 1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">›</button>
+                </div>
+              </div>
+              {activeMonths.length > 0 ? (
+                <div style={{height: 280}}><MonthlyChart data={monthlyData} /></div>
+              ) : (
+                <div className="h-48 flex flex-col items-center justify-center text-gray-400">
+                  <span className="text-4xl mb-3">📈</span>
+                  <p className="text-sm">{revenueYear}년 판매 기록이 없습니다.</p>
+                  <button onClick={() => setMovModal({})} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">판매 기록 추가하기 →</button>
+                </div>
+              )}
+            </div>
+
+            {/* Monthly table */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="font-semibold text-gray-800">월별 상세 ({revenueYear})</h2>
+              </div>
               <table className="w-full">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100">
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">상품명</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">SKU</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Location</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">공급업체</th>
-                    <th className="px-6 py-3.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">재고수량</th>
-                    <th className="px-6 py-3.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">판매수량</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">상태</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">관리</th>
+                    {['월','판매 수량','매출','원가','순수익','마진율'].map(h => (
+                      <th key={h} className={`px-6 py-3.5 text-xs font-semibold text-gray-500 uppercase tracking-wide ${h === '월' ? 'text-left' : 'text-right'}`}>{h}</th>
+                    ))}
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.length === 0 ? (
-                    <tr><td colSpan="8" className="text-center py-16 text-gray-400">
-                      <div className="text-4xl mb-3">📭</div>
-                      <p className="text-sm">표시할 데이터가 없습니다.</p>
-                    </td></tr>
-                  ) : items.map((item, itemIdx) => {
-                    const itemRows = rows.filter(r => r.item.id === item.id);
-                    if (itemRows.length === 0) return null;
-                    return itemRows.map((row, rowIdx) => (
-                      <tr key={`${item.id}-${row.loc.id}`}
-                        className={`hover:bg-gray-50/50 transition-colors ${rowIdx < itemRows.length - 1 ? 'border-b border-gray-50' : itemIdx < items.length - 1 ? 'border-b-2 border-gray-100' : ''}`}>
-                        {/* 상품명: only show on first row of each item */}
-                        <td className="px-6 py-4">
-                          {rowIdx === 0 ? (
-                            <span className="text-sm font-semibold text-gray-800">{item.name}</span>
-                          ) : (
-                            <span className="text-sm text-gray-300 pl-2">↳</span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          {rowIdx === 0 && item.sku ? (
-                            <span className="px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-mono font-semibold">{item.sku}</span>
-                          ) : rowIdx === 0 ? <span className="text-gray-300 text-xs">—</span> : null}
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${row.loc.type === 'warehouse' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
-                            {row.loc.type === 'warehouse' ? '🏭' : '🏪'} {row.loc.name}
+                <tbody className="divide-y divide-gray-50">
+                  {monthlyData.map((m, i) => {
+                    const margin = m.revenue > 0 ? (m.profit / m.revenue) * 100 : 0;
+                    const hasData = m.qty > 0 || m.revenue > 0;
+                    return (
+                      <tr key={i} className={`transition-colors ${hasData ? 'hover:bg-gray-50/50' : 'opacity-40'}`}>
+                        <td className="px-6 py-3.5 text-sm font-medium text-gray-700">{m.month}</td>
+                        <td className="px-6 py-3.5 text-right text-sm text-gray-600">{fmtN(m.qty)}</td>
+                        <td className="px-6 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(m.revenue)}</td>
+                        <td className="px-6 py-3.5 text-right text-sm text-red-400">{fmt(m.cost)}</td>
+                        <td className="px-6 py-3.5 text-right text-sm font-bold text-green-600">{fmt(m.profit)}</td>
+                        <td className="px-6 py-3.5 text-right">
+                          <span className={`text-sm font-semibold ${margin >= 30 ? 'text-green-600' : margin > 0 ? 'text-amber-500' : 'text-gray-300'}`}>
+                            {hasData ? `${margin.toFixed(1)}%` : '—'}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-500">{rowIdx === 0 ? (item.supplier || '—') : ''}</td>
-                        <td className="px-6 py-4 text-right">
-                          <span className={`text-sm font-bold ${row.qty === 0 ? 'text-red-400' : 'text-gray-800'}`}>{row.qty.toLocaleString()}</span>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <span className={`text-sm font-semibold ${row.sold > 0 ? 'text-purple-600' : 'text-gray-300'}`}>{row.sold.toLocaleString()}</span>
-                        </td>
-                        <td className="px-6 py-4"><StockBadge qty={row.qty} /></td>
-                        <td className="px-6 py-4">
-                          <div className="flex gap-1">
-                            <button onClick={() => setMovModal({ itemId: item.id, locId: row.loc.id })}
-                              className="text-xs text-indigo-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 transition-colors whitespace-nowrap">
-                              🔄 입출고
-                            </button>
-                            {rowIdx === 0 && (
-                              <button onClick={() => setItemModal(item)}
-                                className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-                                수정
-                              </button>
-                            )}
-                          </div>
-                        </td>
                       </tr>
-                    ));
+                    );
                   })}
+                  {/* Total row */}
+                  <tr className="bg-gray-50 border-t-2 border-gray-200 font-semibold">
+                    <td className="px-6 py-4 text-sm text-gray-700">합계</td>
+                    <td className="px-6 py-4 text-right text-sm text-gray-700">{fmtN(monthlyData.reduce((s,m)=>s+m.qty,0))}</td>
+                    <td className="px-6 py-4 text-right text-sm text-indigo-700">{fmt(monthlyData.reduce((s,m)=>s+m.revenue,0))}</td>
+                    <td className="px-6 py-4 text-right text-sm text-red-500">{fmt(monthlyData.reduce((s,m)=>s+m.cost,0))}</td>
+                    <td className="px-6 py-4 text-right text-sm text-green-700">{fmt(monthlyData.reduce((s,m)=>s+m.profit,0))}</td>
+                    <td className="px-6 py-4 text-right text-sm text-gray-500">
+                      {monthlyData.reduce((s,m)=>s+m.revenue,0) > 0
+                        ? `${((monthlyData.reduce((s,m)=>s+m.profit,0)/monthlyData.reduce((s,m)=>s+m.revenue,0))*100).toFixed(1)}%`
+                        : '—'}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
-            <div className="px-6 py-3.5 border-t border-gray-100 flex items-center justify-between">
-              <p className="text-xs text-gray-400">{items.length}개 SKU × {locations.length}개 위치</p>
-              <p className="text-xs text-gray-400">전체 재고 {stats.totalQty.toLocaleString()}개 · 누적 판매 {stats.totalSold.toLocaleString()}개</p>
+
+            {/* SKU breakdown */}
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-semibold text-gray-800">SKU별 수익</h2></div>
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['상품','판매수량','매출','순수익'].map(h => (
+                        <th key={h} className={`px-5 py-3 text-xs font-semibold text-gray-500 uppercase ${h === '상품' ? 'text-left' : 'text-right'}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {skuRevenue.map(({ item, revenue, profit, qty }) => (
+                      <tr key={item.id} className="hover:bg-gray-50/50">
+                        <td className="px-5 py-3.5">
+                          <p className="text-sm font-medium text-gray-800 leading-tight">{item.name}</p>
+                          {item.sku && <span className="text-xs text-indigo-500 font-mono">{item.sku}</span>}
+                        </td>
+                        <td className="px-5 py-3.5 text-right text-sm text-gray-600">{fmtN(qty)}</td>
+                        <td className="px-5 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(revenue)}</td>
+                        <td className="px-5 py-3.5 text-right text-sm font-bold text-green-600">{fmt(profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-semibold text-gray-800">위치별 수익</h2></div>
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['위치','판매수량','매출','순수익'].map(h => (
+                        <th key={h} className={`px-5 py-3 text-xs font-semibold text-gray-500 uppercase ${h === '위치' ? 'text-left' : 'text-right'}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {locationRevenue.map(({ loc, revenue, profit, qty }) => (
+                      <tr key={loc.id} className="hover:bg-gray-50/50">
+                        <td className="px-5 py-3.5">
+                          <div className="flex items-center gap-2">
+                            <span>{loc.type === 'warehouse' ? '🏭' : '🏪'}</span>
+                            <span className="text-sm font-medium text-gray-800">{loc.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5 text-right text-sm text-gray-600">{fmtN(qty)}</td>
+                        <td className="px-5 py-3.5 text-right text-sm font-semibold text-indigo-600">{fmt(revenue)}</td>
+                        <td className="px-5 py-3.5 text-right text-sm font-bold text-green-600">{fmt(profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
 
-        {/* ── Movements Tab ── */}
+        {/* ══ MOVEMENTS TAB ══ */}
         {tab === 'movements' && (
           <>
             <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 fade-in">
@@ -528,14 +771,14 @@ function App() {
                 <table className="w-full">
                   <thead>
                     <tr className="bg-gray-50 border-b border-gray-100">
-                      {['일시','유형','상품명','SKU','수량','출발','도착','메모'].map(h => (
+                      {['일시','유형','상품','SKU','수량','판매가','매출','출발','도착','메모'].map(h => (
                         <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {filteredMovements.length === 0 ? (
-                      <tr><td colSpan="8" className="text-center py-16 text-gray-400">
+                      <tr><td colSpan="10" className="text-center py-16 text-gray-400">
                         <div className="text-4xl mb-3">📋</div>
                         <p className="text-sm">이동 기록이 없습니다.</p>
                         <button onClick={() => setMovModal({})} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">첫 기록 추가하기 →</button>
@@ -544,19 +787,16 @@ function App() {
                       const item    = items.find(i => i.id === m.itemId);
                       const fromLoc = locations.find(l => l.id === m.fromLocationId);
                       const toLoc   = locations.find(l => l.id === m.toLocationId);
+                      const revenue = m.type === '판매' ? (m.sellPrice || 0) * m.quantity : null;
                       return (
                         <tr key={m.id} className="hover:bg-gray-50/50 transition-colors">
                           <td className="px-5 py-4 text-xs text-gray-400 whitespace-nowrap">{formatDate(m.date)}</td>
-                          <td className="px-5 py-4">
-                            <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${MOV_COLOR[m.type]}`}>
-                              {MOV_ICON[m.type]} {m.type}
-                            </span>
-                          </td>
+                          <td className="px-5 py-4"><span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${MOV_COLOR[m.type]}`}>{MOV_ICON[m.type]} {m.type}</span></td>
                           <td className="px-5 py-4 text-sm text-gray-800 font-medium">{item?.name || '—'}</td>
-                          <td className="px-5 py-4">
-                            {item?.sku && <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-xs font-mono">{item.sku}</span>}
-                          </td>
-                          <td className="px-5 py-4 text-sm font-bold text-gray-700">{m.quantity.toLocaleString()}</td>
+                          <td className="px-5 py-4">{item?.sku && <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-xs font-mono">{item.sku}</span>}</td>
+                          <td className="px-5 py-4 text-sm font-bold text-gray-700">{fmtN(m.quantity)}</td>
+                          <td className="px-5 py-4 text-sm text-gray-600">{m.sellPrice != null ? fmt(m.sellPrice) : '—'}</td>
+                          <td className="px-5 py-4 text-sm font-semibold text-green-600">{revenue != null ? fmt(revenue) : '—'}</td>
                           <td className="px-5 py-4 text-sm text-gray-500">{fromLoc ? `${fromLoc.type === 'warehouse' ? '🏭' : '🏪'} ${fromLoc.name}` : '—'}</td>
                           <td className="px-5 py-4 text-sm text-gray-500">{toLoc ? `${toLoc.type === 'warehouse' ? '🏭' : '🏪'} ${toLoc.name}` : '—'}</td>
                           <td className="px-5 py-4 text-sm text-gray-400">{m.memo || '—'}</td>
@@ -576,17 +816,7 @@ function App() {
 
       {itemModal && <ItemModal item={itemModal === 'add' ? null : itemModal} onClose={() => setItemModal(null)} onSave={handleSaveItem} />}
       {locModal  && <LocationModal onClose={() => setLocModal(false)} onSave={handleSaveLocation} />}
-      {movModal  && (
-        <MovementModal
-          items={items}
-          locations={locations}
-          stock={stock}
-          defaultItemId={movModal.itemId}
-          defaultLocId={movModal.locId}
-          onClose={() => setMovModal(null)}
-          onSubmit={handleMovement}
-        />
-      )}
+      {movModal  && <MovementModal items={items} locations={locations} stock={stock} defaultItemId={movModal.itemId} defaultLocId={movModal.locId} onClose={() => setMovModal(null)} onSubmit={handleMovement} />}
 
       {toast && (
         <div className="fixed bottom-6 right-6 px-5 py-3.5 rounded-2xl shadow-xl text-sm font-medium text-white bg-gray-800 slide-in z-50">
