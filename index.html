@@ -932,30 +932,54 @@ function App({ currentUser, onLogout }) {
                     {items.map((item,ii)=>{
                       const itemRows=rows.filter(r=>r.item.id===item.id);
                       if(!itemRows.length)return null;
-                      return itemRows.map((row,ri)=>(
-                        <tr key={`${item.id}-${row.loc.id}`} className={`hover:bg-gray-50/50 transition-colors ${ri<itemRows.length-1?'border-b border-gray-50':ii<items.length-1?'border-b-2 border-gray-100':''}`}>
-                          <td className="px-4 py-3">
-                            {ri===0&&(images[item.id]
-                              ?<img src={images[item.id]} className="w-9 h-9 rounded-lg object-cover"/>
-                              :<div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center text-base">📦</div>)}
+                      const totalQty=itemRows.reduce((s,r)=>s+r.qty,0);
+                      const totalSold=itemRows.reduce((s,r)=>s+r.sold,0);
+                      return [
+                        ...itemRows.map((row,ri)=>(
+                          <tr key={`${item.id}-${row.loc.id}`} className={`hover:bg-gray-50/50 transition-colors border-b border-gray-50`}>
+                            <td className="px-4 py-3">
+                              {ri===0&&(images[item.id]
+                                ?<img src={images[item.id]} className="w-9 h-9 rounded-lg object-cover"/>
+                                :<div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center text-base">📦</div>)}
+                            </td>
+                            <td className="px-4 py-3">{ri===0?<span className="text-sm font-semibold text-gray-800">{item.name}</span>:<span className="text-gray-300 text-sm pl-2">↳</span>}</td>
+                            <td className="px-4 py-3 whitespace-nowrap">{ri===0&&item.sku&&<span className="px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-mono font-semibold">{item.sku}</span>}</td>
+                            <td className="px-4 py-3 whitespace-nowrap"><span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${row.loc.type==='warehouse'?'bg-blue-50 text-blue-700':'bg-amber-50 text-amber-700'}`}>{row.loc.type==='warehouse'?'🏭':'🏪'} {row.loc.name}</span></td>
+                            <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{ri===0?(item.supplier||'—'):''}</td>
+                            <td className="px-4 py-3 text-right whitespace-nowrap"><span className={`text-sm font-bold ${row.qty===0?'text-red-400':'text-gray-800'}`}>{fmtN(row.qty)}</span></td>
+                            <td className="px-4 py-3 text-right whitespace-nowrap"><span className={`text-sm font-semibold ${row.sold>0?'text-purple-600':'text-gray-300'}`}>{fmtN(row.sold)}</span></td>
+                            <td className="px-4 py-3 text-right text-sm text-gray-500 whitespace-nowrap">{ri===0&&item.costPrice>0?fmt(item.costPrice):ri===0?'—':''}</td>
+                            <td className="px-4 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">{ri===0&&item.sellPrice>0?fmt(item.sellPrice):ri===0?'—':''}</td>
+                            <td className="px-4 py-3 whitespace-nowrap"><StockBadge qty={row.qty} minStock={item.minStock}/></td>
+                            <td className="px-4 py-3">
+                              <div className="flex gap-1">
+                                <button onClick={()=>setMovModal({itemId:item.id,locId:row.loc.id})} className="text-xs text-indigo-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 whitespace-nowrap">🔄 입출고</button>
+                                {ri===0&&<button onClick={()=>setItemModal(item)} className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100">수정</button>}
+                              </div>
+                            </td>
+                          </tr>
+                        )),
+                        /* SKU 합계 행 */
+                        <tr key={`total-${item.id}`} className={`bg-gray-50/80 ${ii<items.length-1?'border-b-2 border-gray-200':''}`}>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5">
+                            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">전체 합계</span>
                           </td>
-                          <td className="px-4 py-3">{ri===0?<span className="text-sm font-semibold text-gray-800">{item.name}</span>:<span className="text-gray-300 text-sm pl-2">↳</span>}</td>
-                          <td className="px-4 py-3 whitespace-nowrap">{ri===0&&item.sku&&<span className="px-2.5 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-mono font-semibold">{item.sku}</span>}</td>
-                          <td className="px-4 py-3 whitespace-nowrap"><span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap ${row.loc.type==='warehouse'?'bg-blue-50 text-blue-700':'bg-amber-50 text-amber-700'}`}>{row.loc.type==='warehouse'?'🏭':'🏪'} {row.loc.name}</span></td>
-                          <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{ri===0?(item.supplier||'—'):''}</td>
-                          <td className="px-4 py-3 text-right whitespace-nowrap"><span className={`text-sm font-bold ${row.qty===0?'text-red-400':'text-gray-800'}`}>{fmtN(row.qty)}</span></td>
-                          <td className="px-4 py-3 text-right whitespace-nowrap"><span className={`text-sm font-semibold ${row.sold>0?'text-purple-600':'text-gray-300'}`}>{fmtN(row.sold)}</span></td>
-                          <td className="px-4 py-3 text-right text-sm text-gray-500 whitespace-nowrap">{ri===0&&item.costPrice>0?fmt(item.costPrice):ri===0?'—':''}</td>
-                          <td className="px-4 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">{ri===0&&item.sellPrice>0?fmt(item.sellPrice):ri===0?'—':''}</td>
-                          <td className="px-4 py-3 whitespace-nowrap"><StockBadge qty={row.qty} minStock={item.minStock}/></td>
-                          <td className="px-4 py-3">
-                            <div className="flex gap-1">
-                              <button onClick={()=>setMovModal({itemId:item.id,locId:row.loc.id})} className="text-xs text-indigo-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 whitespace-nowrap">🔄 입출고</button>
-                              {ri===0&&<button onClick={()=>setItemModal(item)} className="text-xs text-gray-500 font-medium px-2.5 py-1.5 rounded-lg hover:bg-gray-100">수정</button>}
-                            </div>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                            <span className="text-sm font-bold text-indigo-600">{fmtN(totalQty)}</span>
                           </td>
+                          <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                            <span className="text-sm font-semibold text-purple-500">{fmtN(totalSold)}</span>
+                          </td>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5"/>
+                          <td className="px-4 py-2.5"/>
                         </tr>
-                      ));
+                      ];
                     })}
                   </tbody>
                 </table>
